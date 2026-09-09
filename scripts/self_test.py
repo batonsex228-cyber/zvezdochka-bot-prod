@@ -18,7 +18,7 @@ def fail(message: str) -> int:
 
 
 def main() -> int:
-    print("[SELFTEST] Release: v5.7.2 VK SEND HOTFIX · VK-FIRST", flush=True)
+    print("[SELFTEST] Release: v5.7.3 SITE URL HOTFIX · VK-FIRST", flush=True)
 
     print("[SELFTEST] Python compile...", flush=True)
     for rel in ["app", "scripts", "tests"]:

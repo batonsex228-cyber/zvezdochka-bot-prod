@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def settings(tmp: Path) -> Settings:
     return Settings(
-        site_url="https://zvezdaglazov.ru/new/",
+        site_url="https://zvezdaglazov.ru/",
         kb_file=tmp / "missing.json",
         db_file=tmp / "db.sqlite3",
         crawl_max_pages=40,
@@ -64,7 +64,7 @@ def env(*, fallback=True):
 
 class VersionAndLiveSeedTests(unittest.TestCase):
     def test_version_is_57(self):
-        self.assertEqual(VERSION, "5.7.2")
+        self.assertEqual(VERSION, "5.7.3")
 
     def test_live_dialog_seed_can_work_without_website_snapshot(self):
         td, tmp, db, s, kb, responder, core = env(fallback=False)

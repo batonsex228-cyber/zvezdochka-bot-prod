@@ -1,10 +1,10 @@
 {
-  "source": "https://zvezdaglazov.ru/new/",
+  "source": "https://zvezdaglazov.ru/",
   "generated_at": "2026-09-03T18:33:50.294762+00:00",
   "note": "Bundled verified snapshot. /refreshkb can replace it with a fresh crawl when the server has website access.",
   "pages": [
     {
-      "url": "https://zvezdaglazov.ru/new/",
+      "url": "https://zvezdaglazov.ru/",
       "title": "ДЗЛ «Звёздочка»",
       "chunks": [
         "Детский загородный лагерь «Звёздочка». Программа для детей от 7 до 17 лет. На главной странице указано пятиразовое питание — полноценное меню каждый день.",
@@ -15,7 +15,7 @@
       ]
     },
     {
-      "url": "https://zvezdaglazov.ru/new/pages/trip.html",
+      "url": "https://zvezdaglazov.ru/pages/trip.html",
       "title": "Смены — ДЗЛ «Звёздочка»",
       "chunks": [
         "Зимняя смена 2027 «Тайны Северного сияния»: 3–8 января 2027 года. Стоимость 13 000 рублей.",
@@ -31,7 +31,7 @@
       ]
     },
     {
-      "url": "https://zvezdaglazov.ru/new/pages/parents.html",
+      "url": "https://zvezdaglazov.ru/pages/parents.html",
       "title": "Родителям — ДЗЛ «Звёздочка»",
       "chunks": [
         "В лагерь категорически запрещено брать: газированные напитки; пирожные и торты; сухарики, чипсы и семечки; молочные продукты; мясо, птицу, рыбу, копчёности и колбасы; грибы; ягоды и цитрусовые фрукты; супы, пюре и лапшу быстрого приготовления; фастфуд.",
@@ -45,7 +45,7 @@
       ]
     },
     {
-      "url": "https://zvezdaglazov.ru/new/pages/contacts.html",
+      "url": "https://zvezdaglazov.ru/pages/contacts.html",
       "title": "Контакты — ДЗЛ «Звёздочка»",
       "chunks": [
         "Главный офис продаж: Удмуртская Республика, г. Глазов, ул. Ленина, д. 11Г, цокольный этаж. График: понедельник–пятница 09:00–18:00, обед 12:00–13:00; суббота и воскресенье — выходные.",
@@ -53,7 +53,7 @@
       ]
     },
     {
-      "url": "https://zvezdaglazov.ru/new/pages/extra-services.html",
+      "url": "https://zvezdaglazov.ru/pages/extra-services.html",
       "title": "Дополнительные услуги — ДЗЛ «Звёздочка»",
       "chunks": [
         "QR-квест «Разгадай загадки лагеря»: около 1 часа, количество игроков не ограничено, стоимость 400 рублей с человека.",

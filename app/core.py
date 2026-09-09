@@ -52,7 +52,7 @@ MENU_LABEL_INTENTS: dict[str, str] = {
 PINNED_UI_ANSWERS: dict[str, dict[str, str]] = {
     "shifts_prices": {
         "faq_id": "summer-shifts-2026",
-        "source": "https://zvezdaglazov.ru/new/pages/trip.html",
+        "source": "https://zvezdaglazov.ru/pages/trip.html",
         "text": (
             "📅 <b>Смены и цены</b>\n\n"
             "❄️ <b>Зимняя смена 2027</b>\n"

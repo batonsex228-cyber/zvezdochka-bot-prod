@@ -17,7 +17,7 @@ from app.crawler import crawl_site
 def main() -> int:
     load_dotenv(ROOT / ".env")
     parser = argparse.ArgumentParser(description="Safely rebuild the website knowledge snapshot.")
-    parser.add_argument("--url", default=os.getenv("SITE_URL", "https://zvezdaglazov.ru/new/"))
+    parser.add_argument("--url", default=os.getenv("SITE_URL", "https://zvezdaglazov.ru/"))
     parser.add_argument("--out", default=os.getenv("KB_FILE", "runtime/knowledge_base.json"))
     parser.add_argument("--max-pages", type=int, default=int(os.getenv("CRAWL_MAX_PAGES", "40")))
     args = parser.parse_args()

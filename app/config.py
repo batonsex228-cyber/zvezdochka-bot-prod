@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from dotenv import load_dotenv
 
@@ -21,6 +21,17 @@ def _bool_env(name: str, default: bool = False) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on", "да"}
+
+
+def _normalize_site_url(raw: str) -> str:
+    """Migrate the retired /new/ site prefix without requiring a server .env edit."""
+    value = raw.strip()
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower().removeprefix("www.")
+    if host == "zvezdaglazov.ru" and parsed.path.rstrip("/") == "/new":
+        parsed = parsed._replace(path="/", query="", fragment="")
+        value = urlunparse(parsed)
+    return value
 
 
 @dataclass(frozen=True)
@@ -80,7 +91,7 @@ def load_settings() -> Settings:
     if not 0 <= faq_min_score <= 1 or not 0 <= retrieval_min_score <= 1:
         raise RuntimeError("FAQ_MIN_SCORE и RETRIEVAL_MIN_SCORE должны быть от 0 до 1.")
 
-    site_url = os.getenv("SITE_URL", "https://zvezdaglazov.ru/new/").strip()
+    site_url = _normalize_site_url(os.getenv("SITE_URL", "https://zvezdaglazov.ru/"))
     parsed = urlparse(site_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise RuntimeError("SITE_URL должен быть корректным http/https URL.")

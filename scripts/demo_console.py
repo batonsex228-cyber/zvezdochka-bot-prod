@@ -28,7 +28,7 @@ async def main() -> None:
         max_age_hours=1_000_000,
     )
     settings = Settings(
-        site_url="https://zvezdaglazov.ru/new/",
+        site_url="https://zvezdaglazov.ru/",
         kb_file=runtime / "knowledge_base.json",
         db_file=demo_dir / "demo.sqlite3",
         crawl_max_pages=40,

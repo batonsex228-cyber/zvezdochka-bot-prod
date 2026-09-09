@@ -28,7 +28,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def settings(tmp: Path, **kw) -> Settings:
     base = dict(
-        site_url="https://zvezdaglazov.ru/new/",
+        site_url="https://zvezdaglazov.ru/",
         kb_file=tmp / "knowledge.json",
         db_file=tmp / "db.sqlite3",
         crawl_max_pages=40,
@@ -63,7 +63,7 @@ def core_env():
 
 
 class VersionConfigTests(unittest.TestCase):
-    def test_version(self): self.assertEqual(VERSION, "5.7.2")
+    def test_version(self): self.assertEqual(VERSION, "5.7.3")
     def test_no_aiogram_requirement(self): self.assertNotIn("aiogram", (ROOT / "requirements.txt").read_text())
     def test_no_telegram_secret_in_env_example(self): self.assertNotIn("TELEGRAM_BOT_TOKEN", (ROOT / ".env.example").read_text())
     def test_vk_required_in_env_example(self):
@@ -73,6 +73,14 @@ class VersionConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, patch.dict(os.environ, {"VK_GROUP_TOKEN":"", "VK_GROUP_ID":"0"}, clear=False):
             with self.assertRaises(RuntimeError): load_settings()
     def test_settings_content_token_optional(self): self.assertIsNone(settings(Path(tempfile.mkdtemp())).vk_content_token)
+    def test_legacy_site_url_is_migrated_to_root(self):
+        env = {
+            "VK_GROUP_TOKEN": "test-token",
+            "VK_GROUP_ID": "241267977",
+            "SITE_URL": "https://zvezdaglazov.ru/new/",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            self.assertEqual(load_settings().site_url, "https://zvezdaglazov.ru/")
     def test_source_defaults(self):
         s=settings(Path(tempfile.mkdtemp())); self.assertEqual(s.vk_source_post_limit,10); self.assertEqual(s.vk_source_max_age_days,60)
 
