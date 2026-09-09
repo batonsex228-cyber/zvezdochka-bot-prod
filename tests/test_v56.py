@@ -63,7 +63,7 @@ def core_env():
 
 
 class VersionConfigTests(unittest.TestCase):
-    def test_version(self): self.assertEqual(VERSION, "5.7.3")
+    def test_version(self): self.assertEqual(VERSION, "5.7.4")
     def test_no_aiogram_requirement(self): self.assertNotIn("aiogram", (ROOT / "requirements.txt").read_text())
     def test_no_telegram_secret_in_env_example(self): self.assertNotIn("TELEGRAM_BOT_TOKEN", (ROOT / ".env.example").read_text())
     def test_vk_required_in_env_example(self):

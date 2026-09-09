@@ -18,7 +18,7 @@ def fail(message: str) -> int:
 
 
 def main() -> int:
-    print("[SELFTEST] Release: v5.7.3 SITE URL HOTFIX · VK-FIRST", flush=True)
+    print("[SELFTEST] Release: v5.7.4 GREETING UX HOTFIX · VK-FIRST", flush=True)
 
     print("[SELFTEST] Python compile...", flush=True)
     for rel in ["app", "scripts", "tests"]:
@@ -138,7 +138,7 @@ def main() -> int:
         print("  OK: VK-first devcontainer secrets", flush=True)
 
     print("[SELFTEST] Release docs...", flush=True)
-    for rel in ["README.md", "CHANGELOG_v5_7.md", "PATCH_v5_7_README.md", "KNOWLEDGE_BASE_GUIDE.md", "VK_TEST_SETUP.md", "SERVER_DEPLOY.md"]:
+    for rel in ["README.md", "CHANGELOG_v5_7.md", "PATCH_v5_7_README.md", "CHANGELOG_v5_7_4.md", "PATCH_v5_7_4_README.md", "KNOWLEDGE_BASE_GUIDE.md", "VK_TEST_SETUP.md", "SERVER_DEPLOY.md"]:
         path = ROOT / rel
         if not path.exists():
             return fail(f"missing release document {rel}")

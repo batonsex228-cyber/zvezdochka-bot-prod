@@ -12,6 +12,7 @@ import httpx
 
 from .config import Settings
 from .core import SupportCore
+from .conversation import attachment_intro, greeting_intro, is_greeting_only, split_leading_greeting, with_greeting
 from .db import Database
 from .intent_router import IntentDecision, route
 from .operator import OperatorBridge
@@ -294,9 +295,9 @@ class VKAdapter:
                 keyboard=clarification_keyboard("address"),
             )
 
-    async def _process_question(self, *, text: str, intent: str | None, user: VKUser) -> None:
+    async def _process_question(self, *, text: str, intent: str | None, user: VKUser, greeting: str | None = None) -> None:
         if intent == "ask":
-            await self.send_message(user.peer_id, "Конечно 😊\n\nНапишите вопрос своими словами — постараюсь помочь.", keyboard=main_keyboard())
+            await self.send_message(user.peer_id, "Задавайте 😊\n\nНапишите вопрос своими словами — постараюсь помочь.", keyboard=main_keyboard())
             return
         if intent == "notifications":
             await self._show_notifications(user)
@@ -329,7 +330,7 @@ class VKAdapter:
             template = shifts_carousel_template() if resolved_intent == "shifts_prices" else None
             await self.send_message(
                 user.peer_id,
-                html_to_vk_text(result.presented.text),
+                html_to_vk_text(with_greeting(result.presented.text, greeting)),
                 keyboard=keyboard,
                 template=template,
             )
@@ -346,9 +347,9 @@ class VKAdapter:
         self.db.track(user_id=user.user_id, peer_id=user.peer_id, kind="escalation", name=answer.reason or "unknown")
         customer_handoff = escalation_text(text, answer.reason, delivered=bool(ticket_id))
         if ticket_id:
-            await self.send_message(user.peer_id, html_to_vk_text(customer_handoff), keyboard=main_keyboard())
+            await self.send_message(user.peer_id, html_to_vk_text(with_greeting(customer_handoff, greeting)), keyboard=main_keyboard())
         else:
-            await self.send_message(user.peer_id, html_to_vk_text(customer_handoff), keyboard=fallback_keyboard())
+            await self.send_message(user.peer_id, html_to_vk_text(with_greeting(customer_handoff, greeting)), keyboard=fallback_keyboard())
 
     # ---------------- manager/admin ----------------
     def _is_manager(self, user_id: int) -> bool:
@@ -636,6 +637,7 @@ class VKAdapter:
         if from_id <= 0 or peer_id <= 0:
             return
         text = str(message.get("text") or "").strip()
+        attachments = message.get("attachments") or []
         payload = self._decode_payload(message.get("payload"))
         intent = str(payload.get("intent") or "").strip() or None
         user = await self._user(from_id, peer_id)
@@ -650,13 +652,39 @@ class VKAdapter:
         if intent == "start" or text.lower() in {"начать", "/start", "start"}:
             await self._welcome(user)
             return
-        if not text and not intent:
-            await self.send_message(peer_id, "Напишите вопрос текстом — я постараюсь помочь 🙂", keyboard=main_keyboard())
+
+        # A plain greeting is social contact, not an unanswered support request. Never escalate it.
+        if not intent and text and is_greeting_only(text):
+            greeting, _ = split_leading_greeting(text)
+            self.db.track(user_id=user.user_id, peer_id=user.peer_id, kind="smalltalk", name="greeting")
+            await self.send_message(peer_id, greeting_intro(greeting), keyboard=main_keyboard())
             return
+
+        # VK stickers/attachments often arrive with an empty text field. Respond like a person instead of
+        # telling the parent that the bot "cannot process" the message.
+        if not text and not intent:
+            sticker = isinstance(attachments, list) and any(
+                isinstance(item, dict) and (str(item.get("type") or "") == "sticker" or bool(item.get("sticker")))
+                for item in attachments
+            )
+            self.db.track(user_id=user.user_id, peer_id=user.peer_id, kind="smalltalk", name="sticker" if sticker else "attachment")
+            await self.send_message(peer_id, attachment_intro(sticker=sticker), keyboard=main_keyboard())
+            return
+
         if len(text) > 3500:
             await self.send_message(peer_id, "Сообщение получилось очень длинным. Сформулируйте, пожалуйста, один вопрос покороче 🙂", keyboard=main_keyboard())
             return
-        await self._process_question(text=text or intent or "", intent=intent, user=user)
+
+        # If the parent greets us and asks a question in the same message, keep the greeting in the reply
+        # while routing only the meaningful question text.
+        greeting = None
+        question_text = text
+        if not intent and text:
+            greeting, rest = split_leading_greeting(text)
+            if greeting and rest:
+                question_text = rest
+
+        await self._process_question(text=question_text or intent or "", intent=intent, user=user, greeting=greeting)
 
     async def _handle_message_event(self, update: dict[str, Any]) -> None:
         obj = update.get("object") or {}

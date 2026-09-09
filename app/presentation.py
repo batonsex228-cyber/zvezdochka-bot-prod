@@ -71,7 +71,7 @@ def _contacts(question: str, source: str | None) -> PresentedAnswer:
 
     if intent == "address":
         text = (
-            "📍 Конечно 😊 Наш <b>главный офис продаж</b> находится по адресу:\n\n"
+            "📍 Наш <b>главный офис продаж</b> находится по адресу:\n\n"
             f"{address}\n\n"
             f"🗺 {map_link}\n\n"
             f"🕘 <b>Когда можно прийти:</b>\n{hours}\n\n"
@@ -84,7 +84,7 @@ def _contacts(question: str, source: str | None) -> PresentedAnswer:
 
     if intent == "phone":
         text = (
-            "📞 Конечно! Позвонить нам можно по номеру:\n\n"
+            "📞 Позвонить нам можно по номеру:\n\n"
             f"<b>{phone}</b>\n\n"
             f"🕘 <b>График офиса:</b>\n{hours}\n\n"
             f"✉️ Если удобнее написать: {email_link}"
@@ -94,7 +94,7 @@ def _contacts(question: str, source: str | None) -> PresentedAnswer:
 
     if intent == "email":
         text = (
-            "✉️ Конечно! Наша электронная почта:\n\n"
+            "✉️ Наша электронная почта:\n\n"
             f"<b>{email_link}</b>\n\n"
             f"📞 Телефон: {phone}\n"
             f"📍 Офис: <b>{OFFICE_ADDRESS}</b>"
@@ -104,7 +104,7 @@ def _contacts(question: str, source: str | None) -> PresentedAnswer:
 
     if intent == "hours":
         text = (
-            "🕘 Конечно! <b>Главный офис продаж</b> работает так:\n\n"
+            "🕘 <b>Главный офис продаж</b> работает так:\n\n"
             f"{hours}\n\n"
             f"📍 {OFFICE_ADDRESS}, цокольный этаж\n"
             f"🗺 {map_link}"
@@ -113,7 +113,7 @@ def _contacts(question: str, source: str | None) -> PresentedAnswer:
         return PresentedAnswer(text=text, preview_url=OFFICE_MAP_URL)
 
     text = (
-        "📞 Конечно! Вот наши основные контакты:\n\n"
+        "📞 Вот наши основные контакты:\n\n"
         f"<b>Телефон:</b> {phone}\n\n"
         f"<b>Почта:</b> {email_link}\n\n"
         f"<b>Главный офис продаж:</b>\n{address}\n\n"
@@ -128,12 +128,12 @@ def _shift(question: str, source: str | None, title: str, dates: str, price: str
     price_first = _wants_price(question) and not _wants_dates(question)
     if price_first:
         body = (
-            f"💳 Конечно! <b>{title}:</b> стоимость путёвки — <b>{price}</b>.\n\n"
+            f"💳 <b>{title}:</b> стоимость путёвки — <b>{price}</b>.\n\n"
             f"📅 Даты смены: <b>{dates}</b>."
         )
     else:
         body = (
-            f"📅 Конечно! <b>{title}</b> проходит <b>{dates}</b>.\n\n"
+            f"📅 <b>{title}</b> проходит <b>{dates}</b>.\n\n"
             f"💳 Стоимость путёвки — <b>{price}</b>."
         )
     return PresentedAnswer(body + _more(source, "Подробнее о смене"))
@@ -159,13 +159,13 @@ def present_answer(question: str, answer: BotAnswer, show_source_links: bool = T
 
     if fid == "food-frequency":
         return PresentedAnswer(
-            "🍲 Конечно 😊 В лагере предусмотрено <b>пятиразовое питание</b> — полноценное меню каждый день."
+            "🍲 В лагере предусмотрено <b>пятиразовое питание</b> — полноценное меню каждый день."
             + _more(source, "Подробнее о лагере")
         )
 
     if fid == "summer-shifts-2026":
         text = (
-            "📅 Конечно! Сейчас у «Звёздочки» опубликованы <b>зимняя и летние смены</b>.\n\n"
+            "📅 Сейчас у «Звёздочки» опубликованы <b>зимняя и летние смены</b>.\n\n"
             "❄️ <b>Зимняя смена «Тайны Северного сияния»</b>\n"
             "3–8 января 2027 года\n"
             "Стоимость — <b>13 000 ₽</b>.\n\n"
@@ -182,7 +182,7 @@ def present_answer(question: str, answer: BotAnswer, show_source_links: bool = T
 
     if fid == "all-prices":
         text = (
-            "💳 Конечно! Стоимость опубликованных путёвок такая:\n\n"
+            "💳 Стоимость опубликованных путёвок такая:\n\n"
             "❄️ <b>Зимняя смена 3–8 января 2027:</b> <b>13 000 ₽</b>\n\n"
             "☀️ <b>Летние смены 2026:</b> по <b>34 000 ₽</b> каждая.\n\n"
             "<i>Ниже можно сразу открыть форму нужной смены.</i>"
@@ -261,7 +261,7 @@ def present_answer(question: str, answer: BotAnswer, show_source_links: bool = T
             "копия свидетельства о рождении или паспорта — с 14 лет.",
         ]
         text = (
-            "📄 Конечно! Для поездки понадобится следующий комплект документов:\n\n"
+            "📄 Для поездки понадобится следующий комплект документов:\n\n"
             + _bullets(items)
             + "\n\n<i>Лучше подготовить документы заранее, чтобы перед заездом ничего не искать в последний момент 😊</i>"
             + _more(source, "Документы для родителей")
@@ -336,7 +336,7 @@ def present_answer(question: str, answer: BotAnswer, show_source_links: bool = T
 
     if fid == "bring-all":
         text = (
-            "🎒 Конечно! Вот основное, что стоит собрать ребёнку:\n\n"
+            "🎒 Вот основное, что стоит собрать ребёнку:\n\n"
             "👕 <b>Одежда:</b> по погоде, тёплые вещи, одежда для спорта, пижама, головной убор.\n\n"
             "👟 <b>Обувь:</b> спортивная, сменная, сандалии/босоножки, шлёпки и домашние тапочки.\n\n"
             "🧴 <b>Гигиена:</b> зубная щётка и паста, шампунь, гель для тела, салфетки, солнцезащитный крем, средство от комаров — <b>не аэрозоль</b>.\n\n"
@@ -378,7 +378,7 @@ def present_answer(question: str, answer: BotAnswer, show_source_links: bool = T
         q = _n(question)
         if "бесед" in q:
             text = (
-                "🌿 Да, конечно 😊 <b>Аренда беседки</b> доступна.\n\n"
+                "🌿 Да 😊 <b>Аренда беседки</b> доступна.\n\n"
                 "Стоимость — <b>2 700 ₽ за беседку</b> на 3 часа.\n\n"
                 "В описании услуги указаны мангал, уголь, розжиг и решётка.\n\n"
                 "<i>Чтобы оставить заявку, нажмите кнопку под сообщением.</i>"
@@ -403,7 +403,7 @@ def present_answer(question: str, answer: BotAnswer, show_source_links: bool = T
             )
             return PresentedAnswer(text)
         text = (
-            "✨ Конечно! У лагеря есть дополнительные услуги для детей и взрослых:\n\n"
+            "✨ У лагеря есть дополнительные услуги для детей и взрослых:\n\n"
             "• QR-квест <b>«Разгадай загадки лагеря»</b> — 400 ₽ с человека;\n"
             "• командный квест <b>«Тайна старого лагеря»</b> — стоимость по договорённости;\n"
             "• аренда беседки на 3 часа — <b>2 700 ₽</b>;\n"
@@ -434,5 +434,5 @@ def present_answer(question: str, answer: BotAnswer, show_source_links: bool = T
     # Manual FAQ or future FAQ without a dedicated template. Keep it human, safe and readable.
     clean = html.escape((answer.text or "").strip())
     clean = re.sub(r"\s*\n\s*", "\n", clean)
-    text = f"Конечно 😊\n\n{clean}" + _more(source)
+    text = clean + _more(source)
     return PresentedAnswer(text)

@@ -64,7 +64,7 @@ def env(*, fallback=True):
 
 class VersionAndLiveSeedTests(unittest.TestCase):
     def test_version_is_57(self):
-        self.assertEqual(VERSION, "5.7.3")
+        self.assertEqual(VERSION, "5.7.4")
 
     def test_live_dialog_seed_can_work_without_website_snapshot(self):
         td, tmp, db, s, kb, responder, core = env(fallback=False)
@@ -325,3 +325,88 @@ class ManagerKnowledgeFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.db.manual_knowledge_count(), 1)
         self.assertIsNone(self.db.get_admin_state(user_id=self.user.user_id))
         self.assertEqual(self.kb.find_faq("Настолки можно?").source, "approved_manager_knowledge")
+
+
+class ConversationGreetingTests(unittest.TestCase):
+    def test_plain_greetings_are_recognized_without_question(self):
+        from app.conversation import is_greeting_only
+        for phrase in ["Здравствуйте", "Добрый вечер!", "Привет 👋", "Доброе утро :)" ]:
+            self.assertTrue(is_greeting_only(phrase), phrase)
+
+    def test_greeting_is_separated_from_real_question(self):
+        from app.conversation import split_leading_greeting
+        greeting, rest = split_leading_greeting("Добрый вечер, подскажите пожалуйста время заезда")
+        self.assertEqual(greeting, "Добрый вечер")
+        self.assertEqual(rest, "подскажите пожалуйста время заезда")
+
+    def test_greeting_intro_explains_who_bot_is(self):
+        from app.conversation import greeting_intro
+        text = greeting_intro("Привет")
+        self.assertTrue(text.startswith("Привет!"))
+        self.assertIn("помощник службы поддержки", text)
+        self.assertIn("Звёздочка", text)
+
+
+class ConversationUXAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.td, self.tmp, self.db, self.s, self.kb, self.responder, self.core = env()
+        self.operator = AsyncMock()
+        self.operator.escalate = AsyncMock(return_value=777)
+        self.adapter = VKAdapter(self.s, self.core, self.db, self.operator, knowledge_base=self.kb)
+        self.user = VKUser(123456, 123456, "Тест Родитель", None)
+        self.adapter._user = AsyncMock(return_value=self.user)
+        self.adapter.send_message = AsyncMock(return_value=1)
+        self.adapter.typing = AsyncMock()
+        self.adapter.mark_support_conversation = AsyncMock()
+
+    async def asyncTearDown(self):
+        await self.adapter.close()
+        self.td.cleanup()
+
+    async def test_plain_hello_never_escalates(self):
+        await self.adapter._handle_message_new({"object": {"message": {
+            "from_id": self.user.user_id,
+            "peer_id": self.user.peer_id,
+            "text": "Здравствуйте",
+        }}})
+        self.operator.escalate.assert_not_awaited()
+        sent = self.adapter.send_message.await_args.args[1]
+        self.assertTrue(sent.startswith("Здравствуйте!"))
+        self.assertIn("помощник службы поддержки", sent)
+
+    async def test_sticker_without_text_gets_friendly_intro(self):
+        await self.adapter._handle_message_new({"object": {"message": {
+            "from_id": self.user.user_id,
+            "peer_id": self.user.peer_id,
+            "text": "",
+            "attachments": [{"type": "sticker", "sticker": {"sticker_id": 1}}],
+        }}})
+        self.operator.escalate.assert_not_awaited()
+        sent = self.adapter.send_message.await_args.args[1]
+        self.assertTrue(sent.startswith("Здравствуйте!"))
+        self.assertNotIn("не могу обработать", sent.lower())
+        self.assertNotIn("напишите вопрос текстом", sent.lower())
+
+    async def test_greeting_plus_question_keeps_greeting_and_answers(self):
+        await self.adapter._handle_message_new({"object": {"message": {
+            "from_id": self.user.user_id,
+            "peer_id": self.user.peer_id,
+            "text": "Добрый вечер, подскажите пожалуйста время заезда",
+        }}})
+        self.operator.escalate.assert_not_awaited()
+        sent = self.adapter.send_message.await_args.args[1]
+        self.assertTrue(sent.startswith("Добрый вечер!"))
+        self.assertIn("08:00", sent)
+        self.assertIn("11:00", sent)
+
+    async def test_main_button_answers_do_not_repeat_konechno(self):
+        for intent, text in [
+            ("food", "🍲 Питание"),
+            ("documents", "📄 Документы"),
+            ("contacts", "📞 Контакты"),
+            ("bring", "🎒 Что взять"),
+            ("shifts_prices", "📅 Смены и цены"),
+        ]:
+            result = await self.core.process(text, intent=intent)
+            self.assertTrue(result.supported, intent)
+            self.assertNotIn("Конечно", result.presented.text, intent)
