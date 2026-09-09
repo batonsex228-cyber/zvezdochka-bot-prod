@@ -12,11 +12,13 @@ RUN python -m pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY data ./data
 COPY scripts ./scripts
-COPY tests ./tests
+COPY assets ./assets
 
+# Полные 192 теста уже обязательным шагом проходят в GitHub Actions
+# перед Docker-сборкой. Внутри image оставляем безопасную проверку файлов
+# и компиляцию Python-кода.
 RUN mkdir -p /app/runtime \
  && python scripts/preflight.py \
- && python -m compileall -q app scripts tests \
- && python -W error::ResourceWarning -m unittest discover -s tests -p "test_*.py" -q
+ && python -m compileall -q app scripts
 
 CMD ["python", "-m", "app.main"]
