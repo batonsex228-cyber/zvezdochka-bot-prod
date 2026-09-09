@@ -1,0 +1,12 @@
+services:
+  zvezdochka-bot:
+    build: .
+    container_name: zvezdochka-vk-support-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - zvezdochka_runtime:/app/runtime
+
+volumes:
+  zvezdochka_runtime:

@@ -1,0 +1,18 @@
+[Unit]
+Description=Zvezdochka VK-First Support Bot v5.7
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/zvezdochka-bot
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONUTF8=1
+EnvironmentFile=/opt/zvezdochka-bot/.env
+ExecStart=/opt/zvezdochka-bot/.venv/bin/python -m app.main
+Restart=always
+RestartSec=5
+User=zvezdochka
+
+[Install]
+WantedBy=multi-user.target

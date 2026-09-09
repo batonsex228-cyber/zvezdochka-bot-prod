@@ -1,0 +1,19 @@
+{
+  "name": "Zvezdochka VK-First Support Bot",
+  "image": "mcr.microsoft.com/devcontainers/python:3.13-bookworm",
+  "postCreateCommand": "bash scripts/codespace_setup.sh",
+  "postAttachCommand": "bash scripts/codespace_banner.sh",
+  "secrets": {
+    "VK_GROUP_TOKEN": {"description": "VK community token with messages + manage permissions"},
+    "VK_GROUP_ID": {"description": "Numeric VK community ID without minus sign"},
+    "VK_MANAGER_USER_ID": {"description": "Manager personal numeric VK ID for escalations/admin mode"},
+    "VK_CONTENT_TOKEN": {"description": "Optional service/user token for future recent-wall import"},
+    "OPENAI_API_KEY": {"description": "Optional grounded AI layer"}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"],
+      "settings": {"python.defaultInterpreterPath": "/usr/local/bin/python"}
+    }
+  }
+}

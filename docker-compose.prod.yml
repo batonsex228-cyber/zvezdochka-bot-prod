@@ -1,0 +1,11 @@
+services:
+  zvezdochka-bot:
+    image: ${BOT_IMAGE:?Set BOT_IMAGE in deploy.env}
+    container_name: zvezdochka-vk-support-bot
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    volumes:
+      - ./runtime:/app/runtime
+    stop_grace_period: 20s

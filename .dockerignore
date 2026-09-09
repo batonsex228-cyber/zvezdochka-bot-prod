@@ -1,0 +1,13 @@
+.venv
+.env
+deploy.env
+.git
+.github
+__pycache__
+*.pyc
+*.pyo
+runtime
+*.sqlite3
+*.sqlite3-*
+*.zip
+.DS_Store
