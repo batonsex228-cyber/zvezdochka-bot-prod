@@ -153,8 +153,25 @@ class KnowledgeBase:
         self.seed: dict[str, Any] = json.loads(seed_file.read_text(encoding="utf-8"))
         self.pages: list[dict[str, Any]] = []
         self.external_pages: list[dict[str, Any]] = []
+        self.curated_pages: list[dict[str, Any]] = []
         self.generated_at: datetime | None = None
+        self._load_curated_pages()
         self.reload()
+
+
+    def _load_curated_pages(self) -> None:
+        """Load owner-provided static documents bundled with the release as grounded retrieval evidence."""
+        path = self.seed_file.parent / "official_documents_kb.json"
+        self.curated_pages = []
+        if not path.exists():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            raw = payload.get("pages", [])
+            if isinstance(raw, list):
+                self.curated_pages = [x for x in raw if isinstance(x, dict)]
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            self.curated_pages = []
 
     def reload(self) -> None:
         self.pages = []
@@ -199,7 +216,7 @@ class KnowledgeBase:
         return norm(" ".join(chunks))
 
     def _seed_is_supported_by_snapshot(self, item: dict[str, Any]) -> bool:
-        # Curated facts copied from an official manager dialogue may be intentionally independent
+        # Curated facts copied from an official manager dialogue, owner-provided document, VK bio, or owner note may be intentionally independent
         # of the public website. They still have a review/expiry gate so an old chat cannot become
         # eternal truth. Website-backed FAQ keeps the stricter fresh-snapshot verification below.
         valid_until = str(item.get("valid_until") or "").strip()
@@ -214,7 +231,7 @@ class KnowledgeBase:
 
         if item.get("requires_snapshot") is False:
             source = str(item.get("source", ""))
-            return source.startswith("official_live_dialog:")
+            return source.startswith(("official_live_dialog:", "official_document:", "official_vk_bio:", "owner_note:"))
 
         # Automatic answers from the website are only allowed while our snapshot is recent.
         # If the site cannot be refreshed for too long, escalation is safer than stale facts.
@@ -342,8 +359,11 @@ class KnowledgeBase:
     def search(self, query: str, limit: int = 5) -> list[Evidence]:
         out: list[Evidence] = []
         q_shift = extract_shift_number(query)
-        pages = (self.pages if self.is_fresh else []) + self.external_pages
+        pages = (self.pages if self.is_fresh else []) + self.curated_pages + self.external_pages
         source_weights = {
+            "official_document": 1.08,
+            "official_vk_bio": 1.04,
+            "owner_note": 1.04,
             "website": 1.00,
             "vk_profile": 0.82,
             "vk_wall_recent": 0.72,

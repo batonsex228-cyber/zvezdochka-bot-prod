@@ -18,7 +18,7 @@ def fail(message: str) -> int:
 
 
 def main() -> int:
-    print("[SELFTEST] Release: v5.7.4 GREETING UX HOTFIX · VK-FIRST", flush=True)
+    print("[SELFTEST] Release: v5.8.0 DOCUMENTS + LOST & FOUND KB · VK-FIRST", flush=True)
 
     print("[SELFTEST] Python compile...", flush=True)
     for rel in ["app", "scripts", "tests"]:
@@ -138,14 +138,15 @@ def main() -> int:
         print("  OK: VK-first devcontainer secrets", flush=True)
 
     print("[SELFTEST] Release docs...", flush=True)
-    for rel in ["README.md", "CHANGELOG_v5_7.md", "PATCH_v5_7_README.md", "CHANGELOG_v5_7_4.md", "PATCH_v5_7_4_README.md", "KNOWLEDGE_BASE_GUIDE.md", "VK_TEST_SETUP.md", "SERVER_DEPLOY.md"]:
+    release_docs = ["README.md", "CHANGELOG_v5_7.md", "PATCH_v5_7_README.md", "CHANGELOG_v5_7_4.md", "PATCH_v5_7_4_README.md", "CHANGELOG_v5_8.md", "PATCH_v5_8_README.md", "KNOWLEDGE_BASE_GUIDE.md", "VK_TEST_SETUP.md", "SERVER_DEPLOY.md"]
+    for rel in release_docs:
         path = ROOT / rel
         if not path.exists():
             return fail(f"missing release document {rel}")
-        text = path.read_text(encoding="utf-8")
-        if "5.7" not in text:
-            return fail(f"release document does not mention v5.7: {rel}")
-    print("  OK: v5.7 release documentation", flush=True)
+    for rel in ["CHANGELOG_v5_8.md", "PATCH_v5_8_README.md"]:
+        if "5.8" not in (ROOT / rel).read_text(encoding="utf-8"):
+            return fail(f"release document does not mention v5.8: {rel}")
+    print("  OK: v5.8 release documentation", flush=True)
 
     print(f"\nALL OFFLINE TESTS PASSED — {count} TESTS", flush=True)
     return 0

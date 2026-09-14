@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from .links import CALLBACK_FORM, DOCUMENTS_DOWNLOAD, EXTRA_SERVICES_FORM, SUMMER_SHIFTS_FORM, WINTER_SHIFT_FORM
+from .links import CALLBACK_FORM, CHARTER_DOWNLOAD, DOCUMENTS_DOWNLOAD, EXTRA_SERVICES_FORM, SUMMER_SHIFTS_FORM, WINTER_SHIFT_FORM
 
 
 def _payload(**data) -> str:
@@ -47,8 +47,10 @@ def answer_keyboard(faq_id: str | None, feedback_id: int | None = None) -> str |
         rows.append([_open_link("✨ Оставить заявку", EXTRA_SERVICES_FORM)])
     elif faq_id == "contacts":
         rows.append([_open_link("📞 Заказать обратный звонок", CALLBACK_FORM)])
-    elif faq_id == "documents":
-        rows.append([_open_link("📄 Скачать документы", DOCUMENTS_DOWNLOAD)])
+    elif faq_id in {"documents", "parent-document-forms", "sanitary-conclusion-2026"}:
+        rows.append([_open_link("📄 Открыть документы", DOCUMENTS_DOWNLOAD)])
+    elif faq_id == "charter":
+        rows.append([_open_link("📘 Открыть устав", CHARTER_DOWNLOAD)])
     if feedback_id is not None:
         rows.append([
             _callback("👍 Помогло", {"action": "feedback", "value": "yes", "id": feedback_id}, "positive"),

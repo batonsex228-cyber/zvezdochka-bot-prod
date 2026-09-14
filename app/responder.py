@@ -222,7 +222,7 @@ class StrictResponder:
         # does not document. This is what makes the in-chat knowledge editor useful without weakening hard safety.
         faq = self.kb.find_faq(question)
         if faq and faq.score >= self.settings.faq_min_score and (
-            str(faq.source).startswith("approved_") or str(faq.source).startswith("official_live_dialog")
+            str(faq.source).startswith("approved_") or str(faq.source).startswith(("official_live_dialog:", "official_document:", "official_vk_bio:", "owner_note:"))
         ):
             return BotAnswer(True, faq.answer, faq.source, faq.score, reason="approved_manager_faq", faq_id=faq.faq_id)
 
@@ -230,7 +230,8 @@ class StrictResponder:
         if looks_unconfirmed_policy(question):
             return BotAnswer(False, None, confidence=0.0, reason="unconfirmed_policy")
 
-        # Rule 3: do not confuse the published sales-office address with the physical camp address.
+        # Rule 3: do not confuse the sales-office address with the physical camp address.
+        # A specifically approved official-document FAQ is handled above; unknown formulations still escalate.
         if looks_camp_address_request(question):
             return BotAnswer(False, None, confidence=0.0, reason="camp_address_not_confirmed")
 
@@ -278,7 +279,7 @@ class StrictResponder:
 - отвечать на индивидуальные медицинские, юридические или персональные ситуации;
 - считать отсутствие информации подтверждением отрицательного ответа.
 
-Приоритет доверия: approved_faq > website > vk_profile > vk_wall_recent.
+Приоритет доверия: approved_faq > official_document > owner_note > official_vk_bio > website > vk_profile > vk_wall_recent.
 Если сведения из более слабого источника противоречат более сильному, не выбирай слабый источник.
 Если точного ответа нет, сведения неполные, неоднозначные или противоречат друг другу — supported=false.
 

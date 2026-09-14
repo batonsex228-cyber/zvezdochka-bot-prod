@@ -63,7 +63,7 @@ def core_env():
 
 
 class VersionConfigTests(unittest.TestCase):
-    def test_version(self): self.assertEqual(VERSION, "5.7.4")
+    def test_version(self): self.assertEqual(VERSION, "5.8.0")
     def test_no_aiogram_requirement(self): self.assertNotIn("aiogram", (ROOT / "requirements.txt").read_text())
     def test_no_telegram_secret_in_env_example(self): self.assertNotIn("TELEGRAM_BOT_TOKEN", (ROOT / ".env.example").read_text())
     def test_vk_required_in_env_example(self):
@@ -168,7 +168,11 @@ class CoreAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_documents(self): r=await self.core.process("079",intent="documents"); self.assertTrue(r.supported)
     async def test_unknown_intent(self): r=await self.core.process("x",intent="nonsense"); self.assertFalse(r.supported)
     async def test_current_availability_escalates(self): r=await self.core.process("есть места сейчас?"); self.assertFalse(r.supported); self.assertEqual(r.answer.reason,"dynamic_availability")
-    async def test_camp_address_escalates(self): r=await self.core.process("адрес лагеря звездочка"); self.assertFalse(r.supported)
+    async def test_camp_address_uses_official_document(self):
+        r=await self.core.process("адрес лагеря звездочка")
+        self.assertTrue(r.supported)
+        self.assertEqual(r.answer.faq_id, "camp-address")
+        self.assertIn("Адам", r.answer.text)
     async def test_pinned_independent_of_kb(self):
         self.kb.pages=[]; r=await self.core.process("📅 Смены и цены",intent="shifts_prices"); self.assertTrue(r.supported)
     async def test_all_intents_known(self):
@@ -183,7 +187,7 @@ class KeyboardTests(unittest.TestCase):
     def test_main_has_six_core_labels(self):
         k=json.loads(main_keyboard()); labels=[b["action"]["label"] for row in k["buttons"] for b in row]; self.assertIn("📅 Смены и цены",labels); self.assertIn("📞 Контакты",labels)
     def test_feedback_keyboard(self): self.assertIn("Помогло",answer_keyboard("documents",1))
-    def test_documents_link(self): self.assertIn("Скачать документы",answer_keyboard("documents",1))
+    def test_documents_link(self): self.assertIn("Открыть документы",answer_keyboard("documents",1))
     def test_address_clarification(self): self.assertIn("Офис продаж",clarification_keyboard("address"))
     def test_subscription_on(self): self.assertIn("Отключить",notification_keyboard(True))
     def test_subscription_off(self): self.assertIn("Получать",notification_keyboard(False))
