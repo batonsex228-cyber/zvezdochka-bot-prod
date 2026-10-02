@@ -166,7 +166,13 @@ def route(text: str, context: dict[str, str] | None = None) -> IntentDecision:
     if "обув" in n: return IntentDecision("shoes", confidence=0.95)
     if any(k in n for k in ["гигиен", "зубная щетка", "шампун"]): return IntentDecision("hygiene", confidence=0.95)
     if any(k in n for k in ["одежд", "футбол", "штаны", "свитер", "кофт"]): return IntentDecision("clothes", confidence=0.95)
-    if any(k in n for k in ["питани", "кормят", "кормление", "сколько раз едят", "еда", "едят"]): return IntentDecision("food", confidence=0.94)
+    # Short words like "еда" must be matched as words, not arbitrary substrings: otherwise
+    # "передать лекарства" contains the letters "еда" and is incorrectly routed to food.
+    if (
+        any(k in n for k in ["питани", "кормят", "кормление", "сколько раз едят"])
+        or re.search(r"\b(?:еда|едят)\b", n)
+    ):
+        return IntentDecision("food", confidence=0.94)
     if any(k in n for k in ["во сколько заезд", "когда заезд", "время заезда", "во сколько выезд", "когда выезд", "привозить ребенка", "забирать ребенка", "к какому времени завтра привозить", "во сколько завтра заезд"]):
         return IntentDecision("arrival", confidence=0.97)
     if "трансфер" in n: return IntentDecision("transfer", confidence=0.98)

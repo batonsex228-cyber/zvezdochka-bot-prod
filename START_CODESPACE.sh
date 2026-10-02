@@ -4,7 +4,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 printf '\n============================================================\n'
-printf ' ZVEZDOCHKA BOT v5.7 - VK-FIRST CODESPACES START\n'
+printf ' ZVEZDOCHKA BOT v6.0 - SMART HANDOFF · VK-FIRST CODESPACES START\n'
 printf '============================================================\n'
 
 if [[ -z "${VK_GROUP_TOKEN:-}" || -z "${VK_GROUP_ID:-}" ]]; then

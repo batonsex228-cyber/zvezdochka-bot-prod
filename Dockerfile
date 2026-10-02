@@ -14,9 +14,8 @@ COPY data ./data
 COPY scripts ./scripts
 COPY assets ./assets
 
-# Полные 192 теста уже обязательным шагом проходят в GitHub Actions
-# перед Docker-сборкой. Внутри image оставляем безопасную проверку файлов
-# и компиляцию Python-кода.
+# The full offline test suite already runs in the GitHub Actions "Offline tests" job
+# before this Docker job. Keep image build architecture-neutral: preflight + compile only.
 RUN mkdir -p /app/runtime \
  && python scripts/preflight.py \
  && python -m compileall -q app scripts

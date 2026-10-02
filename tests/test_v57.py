@@ -64,7 +64,7 @@ def env(*, fallback=True):
 
 class VersionAndLiveSeedTests(unittest.TestCase):
     def test_version_is_57(self):
-        self.assertEqual(VERSION, "5.8.0")
+        self.assertEqual(VERSION, "6.0.0")
 
     def test_live_dialog_seed_can_work_without_website_snapshot(self):
         td, tmp, db, s, kb, responder, core = env(fallback=False)
@@ -227,20 +227,32 @@ class LiveAnswerAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(r.supported)
         self.assertIn("паспорт родителя", r.presented.text)
 
-    async def test_phone_policy_answer(self):
+    async def test_phone_policy_answer_respects_review_expiry(self):
+        payload = json.loads((ROOT / "data" / "seed_faq.json").read_text(encoding="utf-8"))
+        item = next(x for x in payload["faq"] if x["id"] == "phone-custody-live")
+        valid_until = datetime.fromisoformat(item["valid_until"].replace("Z", "+00:00"))
+        valid_until = valid_until if valid_until.tzinfo else valid_until.replace(tzinfo=timezone.utc)
+
         r = await self.core.process("Забирают ли телефоны?", intent="phone_policy")
-        self.assertTrue(r.supported)
-        self.assertIn("16:30", r.presented.text)
+        if datetime.now(timezone.utc) >= valid_until.astimezone(timezone.utc):
+            # The June live-dialogue rule was deliberately time-bounded. Once review expires,
+            # fail closed and hand the question to a human instead of repeating stale policy.
+            self.assertFalse(r.supported)
+            self.assertEqual(r.answer.reason, "intent_faq_unavailable")
+        else:
+            self.assertTrue(r.supported)
+            self.assertIn("16:30", r.presented.text)
 
     async def test_ndfl_answer(self):
         r = await self.core.process("Документы на НДФЛ", intent="ndfl_documents")
         self.assertTrue(r.supported)
         self.assertIn("ФИО ребёнка", r.presented.text)
 
-    async def test_new_year_current_temporary_answer(self):
+    async def test_expired_new_year_temporary_answer_is_not_reused(self):
+        # The owner-approved announcement expired on 23 Sep 2026. After that date the
+        # bot must fail closed instead of repeating stale campaign information.
         r = await self.core.process("Будут ли программы на Новый год?", intent="new_year_offer")
-        self.assertTrue(r.supported)
-        self.assertIn("после 22 сентября", r.presented.text)
+        self.assertFalse(r.supported)
 
     async def test_dynamic_gazebo_question_never_uses_static_extra_services(self):
         r = await self.core.process("Есть свободная беседка 13 сентября?")
@@ -371,8 +383,8 @@ class ConversationUXAsyncTests(unittest.IsolatedAsyncioTestCase):
         }}})
         self.operator.escalate.assert_not_awaited()
         sent = self.adapter.send_message.await_args.args[1]
-        self.assertTrue(sent.startswith("Здравствуйте!"))
-        self.assertIn("помощник службы поддержки", sent)
+        self.assertIn("Здравствуйте", sent)
+        self.assertIn("бот технической поддержки", sent)
 
     async def test_sticker_without_text_gets_friendly_intro(self):
         await self.adapter._handle_message_new({"object": {"message": {
@@ -383,21 +395,36 @@ class ConversationUXAsyncTests(unittest.IsolatedAsyncioTestCase):
         }}})
         self.operator.escalate.assert_not_awaited()
         sent = self.adapter.send_message.await_args.args[1]
-        self.assertTrue(sent.startswith("Здравствуйте!"))
+        self.assertIn("Здравствуйте", sent)
+        self.assertIn("бот технической поддержки", sent)
         self.assertNotIn("не могу обработать", sent.lower())
-        self.assertNotIn("напишите вопрос текстом", sent.lower())
 
-    async def test_greeting_plus_question_keeps_greeting_and_answers(self):
+    async def test_first_contact_greeting_plus_question_sends_intro_then_answer(self):
         await self.adapter._handle_message_new({"object": {"message": {
             "from_id": self.user.user_id,
             "peer_id": self.user.peer_id,
             "text": "Добрый вечер, подскажите пожалуйста время заезда",
         }}})
         self.operator.escalate.assert_not_awaited()
+        self.assertEqual(self.adapter.send_message.await_count, 2)
+        intro = self.adapter.send_message.await_args_list[0].args[1]
+        answer = self.adapter.send_message.await_args_list[1].args[1]
+        self.assertIn("бот технической поддержки", intro)
+        self.assertIn("08:00", answer)
+        self.assertIn("11:00", answer)
+
+    async def test_existing_parent_greeting_plus_question_keeps_greeting(self):
+        self.db.track(user_id=self.user.user_id, peer_id=self.user.peer_id, kind="message", name="old")
+        await self.adapter._handle_message_new({"object": {"message": {
+            "from_id": self.user.user_id,
+            "peer_id": self.user.peer_id,
+            "text": "Добрый вечер, подскажите пожалуйста время заезда",
+        }}})
+        self.operator.escalate.assert_not_awaited()
+        self.assertEqual(self.adapter.send_message.await_count, 1)
         sent = self.adapter.send_message.await_args.args[1]
         self.assertTrue(sent.startswith("Добрый вечер!"))
         self.assertIn("08:00", sent)
-        self.assertIn("11:00", sent)
 
     async def test_main_button_answers_do_not_repeat_konechno(self):
         for intent, text in [

@@ -10,11 +10,17 @@ from typing import Any
 
 import httpx
 
+from .booking import BookingAPIError, BookingEngine, BookingResult, BookingUser, is_booking_request
 from .config import Settings
 from .core import SupportCore
 from .conversation import attachment_intro, greeting_intro, is_greeting_only, split_leading_greeting, with_greeting
 from .db import Database
 from .intent_router import IntentDecision, route
+from .intake import (
+    IntakeResult, IntakeUser, SmartHandoffEngine, build_urgent_submission,
+    contains_payment_secret, is_urgent_safety,
+)
+from .knowledge_loop import knowledge_candidate_allowed
 from .operator import OperatorBridge
 from .responder import BotAnswer, manual_knowledge_allowed
 from .texts import ESCALATED, ESCALATED_NO_CHANNEL, WELCOME, escalation_text
@@ -27,6 +33,10 @@ from .vk_keyboards import (
     fallback_keyboard,
     main_keyboard,
     manager_ticket_keyboard,
+    manager_booking_keyboard,
+    parent_booking_confirmation_keyboard,
+    parent_intake_confirmation_keyboard,
+    knowledge_candidate_keyboard,
     newsletter_preview_keyboard,
     notification_keyboard,
     shifts_carousel_template,
@@ -56,7 +66,7 @@ class VKAdapter:
 
     API_BASE = "https://api.vk.com/method/"
 
-    def __init__(self, settings: Settings, core: SupportCore, db: Database, operator: OperatorBridge, *, knowledge_base=None):
+    def __init__(self, settings: Settings, core: SupportCore, db: Database, operator: OperatorBridge, *, knowledge_base=None, booking: BookingEngine | None = None, intake: SmartHandoffEngine | None = None):
         if not settings.vk_group_token or not settings.vk_group_id:
             raise RuntimeError("VKAdapter requires VK_GROUP_TOKEN and VK_GROUP_ID")
         self.settings = settings
@@ -64,6 +74,8 @@ class VKAdapter:
         self.db = db
         self.operator = operator
         self.kb = knowledge_base
+        self.booking = booking
+        self.intake = intake
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(40.0, connect=12.0))
         self._stopping = False
         self.group_name: str | None = None
@@ -74,6 +86,8 @@ class VKAdapter:
     async def close(self) -> None:
         self._stopping = True
         await self.client.aclose()
+        if self.booking is not None:
+            await self.booking.close()
 
     @staticmethod
     def _encode_param(value: Any) -> Any:
@@ -351,6 +365,155 @@ class VKAdapter:
         else:
             await self.send_message(user.peer_id, html_to_vk_text(with_greeting(customer_handoff, greeting)), keyboard=fallback_keyboard())
 
+    async def _send_booking_result(self, user: VKUser, result: BookingResult, *, original_question: str | None = None) -> bool:
+        if not result.handled:
+            return False
+        if result.state == "escalate":
+            answer = BotAnswer(False, None, confidence=0.0, reason=result.error_reason or "booking_backend_unavailable")
+            ticket_id = await self.operator.escalate(
+                platform="vk", user_id=user.user_id, chat_id=user.peer_id, username=user.username,
+                full_name=user.full_name, question=(original_question or "Запрос на бронирование"), answer=answer,
+            )
+            text = (
+                "Сейчас не получается надёжно проверить календарь бронирований. Я передал запрос специалисту 💛\n\n"
+                "Повторно писать не нужно — ответ придёт сюда."
+                if ticket_id else
+                "Сейчас не получается проверить календарь бронирований. Пожалуйста, воспользуйтесь обратным звонком — сотрудник поможет оформить заявку."
+            )
+            await self.send_message(user.peer_id, text, keyboard=main_keyboard() if ticket_id else fallback_keyboard())
+            return True
+        keyboard = parent_booking_confirmation_keyboard() if result.needs_parent_confirmation else main_keyboard()
+        if result.text:
+            await self.send_message(user.peer_id, result.text, keyboard=keyboard)
+        if result.manager_text and result.booking_id and self.settings.vk_manager_user_id:
+            try:
+                await self.send_message(
+                    int(self.settings.vk_manager_user_id),
+                    result.manager_text,
+                    keyboard=manager_booking_keyboard(result.booking_id),
+                )
+            except Exception as exc:
+                print(f"[booking] manager notification failed: {exc}", flush=True)
+        return True
+
+    async def _try_booking_text(self, user: VKUser, text: str) -> bool:
+        if self.booking is None or not self.booking.candidate(text, user_id=user.user_id):
+            return False
+        # Do not leave two competing local forms alive. If this message is handled by Booking,
+        # an unfinished Smart Handoff would otherwise wake up later and consume a booking reply.
+        if self.intake is not None and self.intake.has_active(user.user_id):
+            self.intake.abandon_for_other_flow(user.user_id)
+        result = await self.booking.handle_text(
+            BookingUser(user.user_id, user.peer_id, user.full_name, user.username), text
+        )
+        return await self._send_booking_result(user, result, original_question=text)
+
+    @staticmethod
+    def _intake_manager_summary(submission: dict[str, Any]) -> str:
+        lines: list[str] = []
+        for item in submission.get("display_fields") or []:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("label") or "").strip()
+            value = str(item.get("value") or "").strip()
+            if label and value:
+                lines.append(f"• {label}: {value}")
+        original = str(submission.get("original_question") or "").strip()
+        if original:
+            lines.append(f"\n💬 Исходное сообщение:\n{original}")
+        return "\n".join(lines) or "💬 Данные собраны ботом."
+
+    async def _submit_intake(self, user: VKUser, submission: dict[str, Any], *, claimed: bool) -> bool:
+        title = str(submission.get("title") or "Обращение")
+        intake_type = str(submission.get("intake_type") or "general")
+        priority = str(submission.get("priority") or "normal")
+        original = str(submission.get("original_question") or title)
+        ticket_id = await self.operator.escalate_intake(
+            user_id=user.user_id, chat_id=user.peer_id, username=user.username, full_name=user.full_name,
+            question=original, intake_type=intake_type, intake_title=title, intake_payload=submission,
+            priority=priority, summary_text=self._intake_manager_summary(submission),
+        )
+        if claimed and self.intake is not None:
+            self.intake.submission_finished(user.user_id, success=bool(ticket_id))
+        if ticket_id:
+            self.db.track(
+                user_id=user.user_id, peer_id=user.peer_id, kind="smart_handoff_submit", name=intake_type,
+                meta={"ticket_id": ticket_id, "priority": priority},
+            )
+            customer_text = (
+                "🔴 Сообщение срочно передано специалисту. Повторно отправлять его не нужно."
+                if priority == "urgent" else
+                "✅ Готово. Я собрал данные и передал заявку специалисту. Повторно писать то же самое не нужно — ответ придёт сюда 💛"
+            )
+            await self.send_message(user.peer_id, customer_text, keyboard=main_keyboard())
+            return True
+        if priority == "urgent":
+            fail_text = (
+                "⚠️ Сейчас не получилось автоматически передать срочное сообщение специалисту. "
+                "Если есть непосредственная угроза жизни или здоровью — звоните 112. "
+                "Для связи с лагерем воспользуйтесь обратным звонком."
+            )
+        elif claimed:
+            fail_text = (
+                "Сейчас не получилось передать заявку специалисту. Собранная заявка сохранена — "
+                "попробуйте подтвердить её ещё раз чуть позже или воспользуйтесь обратным звонком."
+            )
+        else:
+            fail_text = (
+                "Сейчас не получилось автоматически передать обращение специалисту. "
+                "Пожалуйста, воспользуйтесь обратным звонком — так обращение точно не потеряется."
+            )
+        await self.send_message(user.peer_id, fail_text, keyboard=fallback_keyboard())
+        return True
+
+    async def _send_intake_result(self, user: VKUser, result: IntakeResult) -> bool:
+        if not result.handled:
+            return False
+        if result.state in {"submit", "submit_immediate"} and result.submission:
+            if result.text and result.state == "submit_immediate":
+                await self.send_message(user.peer_id, result.text, keyboard=main_keyboard())
+            return await self._submit_intake(user, result.submission, claimed=(result.state == "submit"))
+        keyboard = parent_intake_confirmation_keyboard() if result.needs_parent_confirmation else main_keyboard()
+        if result.text:
+            await self.send_message(user.peer_id, result.text, keyboard=keyboard)
+        return True
+
+    async def _try_intake_text(self, user: VKUser, text: str) -> bool:
+        if self.intake is None or not self.intake.candidate(text, user_id=user.user_id):
+            return False
+        # A collecting Booking form can steal simple answers such as «2 смена». Release it before
+        # starting Smart Handoff. A booking already pending manager approval is safe to keep.
+        if self.booking is not None and self.booking.blocks_other_flow(user.user_id):
+            await self.booking.abandon_for_other_flow(user.user_id, reason="switched_to_smart_handoff")
+        result = await self.intake.handle_text(
+            IntakeUser(user.user_id, user.peer_id, user.full_name, user.username), text
+        )
+        if result.handled:
+            row = self.db.get_intake_session(user_id=user.user_id)
+            name = (row or {}).get("intake_type") or (result.submission or {}).get("intake_type") or result.state or "intake"
+            self.db.track(user_id=user.user_id, peer_id=user.peer_id, kind="smart_handoff", name=str(name))
+        return await self._send_intake_result(user, result)
+
+    async def _offer_knowledge_candidate(self, manager: VKUser, ticket, answer_text: str) -> None:
+        if not self.settings.knowledge_loop_enabled:
+            return
+        allowed, _reason = knowledge_candidate_allowed(ticket, answer_text)
+        if not allowed:
+            return
+        ticket_id = int(ticket["id"])
+        if str(ticket["knowledge_candidate_status"] or ""):
+            return
+        try:
+            await self.send_message(
+                manager.peer_id,
+                "📚 Этот ответ похож на устойчивое правило и может пригодиться другим родителям.\n\n"
+                "Добавить его в базу знаний? Персональные и динамические обращения сюда автоматически не предлагаются.",
+                keyboard=knowledge_candidate_keyboard(ticket_id),
+            )
+            self.db.set_ticket_knowledge_candidate(ticket_id, "offered")
+        except Exception as exc:
+            print(f"[knowledge-loop] offer failed for ticket #{ticket_id}: {type(exc).__name__}: {exc}", flush=True)
+
     # ---------------- manager/admin ----------------
     def _is_manager(self, user_id: int) -> bool:
         return bool(self.settings.vk_manager_user_id and user_id == self.settings.vk_manager_user_id)
@@ -385,7 +548,11 @@ class VKAdapter:
             q = str(row["question"]).replace("\n", " ")
             if len(q) > 130:
                 q = q[:127] + "…"
-            parts.append(f"\n#{row['id']} · {row['full_name']}\n{q}")
+            priority = str(row["priority"] or "normal") if "priority" in row.keys() else "normal"
+            intake_type = str(row["intake_type"] or "") if "intake_type" in row.keys() else ""
+            icon = {"urgent": "🔴", "high": "🟠", "low": "🟢"}.get(priority, "🟡")
+            tag = f" · {intake_type}" if intake_type else ""
+            parts.append(f"\n{icon} #{row['id']} · {row['full_name']}{tag}\n{q}")
         parts.append("\nОтвет: #номер текст")
         return "\n".join(parts)
 
@@ -400,6 +567,8 @@ class VKAdapter:
         lines = [f"🧪 Диагностика v{VERSION}", f"VK group: {self.settings.vk_group_id}", f"Manager: {self.settings.vk_manager_user_id or 'не задан'}"]
         lines.append(f"Website KB: {'fresh' if getattr(self.kb, 'is_fresh', False) else 'stale/fallback'}")
         lines.append(f"Manager KB: {self.db.manual_knowledge_count()} active")
+        lines.append(f"Smart Handoff: {'ON' if self.intake is not None else 'OFF'} · active sessions: {self.db.intake_session_count()}")
+        lines.append(f"Knowledge Loop: {'ON' if self.settings.knowledge_loop_enabled else 'OFF'}")
         lines.append(f"VK profile source: {'OK' if self._profile_pages else 'not loaded'}")
         if self.settings.vk_content_token:
             lines.append(f"Recent VK posts: {len(self._wall_pages)} loaded")
@@ -493,6 +662,9 @@ class VKAdapter:
                 return True
             delivered, error = await self.operator.deliver_human_answer(ticket, answer_text)
             await self.send_message(user.peer_id, f"✅ Ответ по заявке #{ticket_id} отправлен пользователю." if delivered else f"⚠️ Не удалось отправить: {error}", keyboard=admin_keyboard())
+            if delivered:
+                refreshed = self.db.get_ticket(ticket_id) or ticket
+                await self._offer_knowledge_candidate(user, refreshed, answer_text)
             return True
 
         state = self.db.get_admin_state(user_id=user.user_id)
@@ -507,6 +679,42 @@ class VKAdapter:
                     return True
                 delivered, error = await self.operator.deliver_human_answer(ticket, clean)
                 await self.send_message(user.peer_id, f"✅ Ответ по заявке #{ticket_id} отправлен." if delivered else f"⚠️ Не удалось отправить: {error}", keyboard=admin_keyboard())
+                if delivered:
+                    refreshed = self.db.get_ticket(ticket_id) or ticket
+                    await self._offer_knowledge_candidate(user, refreshed, clean)
+                return True
+            if state_name == "knowledge_loop_edit" and clean and not clean.startswith("#"):
+                ticket_id = int(payload.get("ticket_id") or 0)
+                if not self.settings.knowledge_loop_enabled:
+                    self.db.set_admin_state(user_id=user.user_id, state=None)
+                    if ticket_id:
+                        ticket = self.db.get_ticket(ticket_id)
+                        if ticket and str(ticket["knowledge_candidate_status"] or "") == "editing":
+                            self.db.set_ticket_knowledge_candidate(ticket_id, "skipped")
+                    await self.send_message(user.peer_id, "ℹ️ Knowledge Loop сейчас отключён в настройках.", keyboard=admin_keyboard())
+                    return True
+                ticket = self.db.get_ticket(ticket_id)
+                self.db.set_admin_state(user_id=user.user_id, state=None)
+                if not ticket or str(ticket["status"] or "") != "answered":
+                    await self.send_message(user.peer_id, f"⚠️ Заявка #{ticket_id} недоступна для базы знаний.", keyboard=admin_keyboard())
+                    return True
+                if str(ticket["knowledge_candidate_status"] or "") != "editing":
+                    await self.send_message(user.peer_id, f"ℹ️ Предложение по заявке #{ticket_id} уже обработано.", keyboard=admin_keyboard())
+                    return True
+                allowed, reason = knowledge_candidate_allowed(ticket, clean)
+                if not allowed:
+                    self.db.set_ticket_knowledge_candidate(ticket_id, "rejected")
+                    await self.send_message(user.peer_id, f"⚠️ Этот ответ не сохранён как общее знание ({reason}).", keyboard=admin_keyboard())
+                    return True
+                knowledge_id = self.db.add_manual_knowledge(
+                    question=str(ticket["question"]), answer=clean, created_by=user.user_id, kind="permanent"
+                )
+                if knowledge_id:
+                    self.db.set_ticket_knowledge_candidate(ticket_id, "saved", knowledge_id)
+                    await self.send_message(user.peer_id, f"✅ Знание #{knowledge_id} сохранено. Следующим родителям бот сможет использовать этот ответ.", keyboard=admin_keyboard())
+                else:
+                    self.db.set_ticket_knowledge_candidate(ticket_id, "duplicate")
+                    await self.send_message(user.peer_id, "ℹ️ Такой вопрос и ответ уже есть в базе знаний.", keyboard=admin_keyboard())
                 return True
             if state_name == "kb_question" and clean and not clean.startswith("#"):
                 kind = str(payload.get("kind") or "permanent")
@@ -562,6 +770,15 @@ class VKAdapter:
 
         cmd = clean.lower()
         if cmd in {"#меню", "#menu", "#admin"}:
+            if state and state[0] == "knowledge_loop_edit":
+                try:
+                    ticket_id = int((state[1] or {}).get("ticket_id") or 0)
+                except (TypeError, ValueError):
+                    ticket_id = 0
+                if ticket_id:
+                    ticket = self.db.get_ticket(ticket_id)
+                    if ticket and str(ticket["knowledge_candidate_status"] or "") == "editing":
+                        self.db.set_ticket_knowledge_candidate(ticket_id, "skipped")
             self.db.set_admin_state(user_id=user.user_id, state=None)
             await self.send_message(user.peer_id, "🛠 ПАНЕЛЬ АДМИНИСТРАТОРА", keyboard=admin_keyboard())
             return True
@@ -642,6 +859,7 @@ class VKAdapter:
         intent = str(payload.get("intent") or "").strip() or None
         user = await self._user(from_id, peer_id)
 
+        first_contact = not self.db.has_seen_user(user_id=user.user_id, platform="vk")
         self.db.track(user_id=user.user_id, peer_id=user.peer_id, kind="message", name=intent or "text")
         if intent:
             self.db.track(user_id=user.user_id, peer_id=user.peer_id, kind="button", name=intent)
@@ -653,11 +871,18 @@ class VKAdapter:
             await self._welcome(user)
             return
 
+        # A first-time parent may skip the Start button and immediately ask a real question.
+        # Send the intro once, but NEVER consume/ignore that question: the same incoming
+        # message continues through booking/FAQ/human handoff below.
+        if first_contact:
+            await self.send_message(user.peer_id, html_to_vk_text(WELCOME), keyboard=main_keyboard())
+
         # A plain greeting is social contact, not an unanswered support request. Never escalate it.
         if not intent and text and is_greeting_only(text):
             greeting, _ = split_leading_greeting(text)
             self.db.track(user_id=user.user_id, peer_id=user.peer_id, kind="smalltalk", name="greeting")
-            await self.send_message(peer_id, greeting_intro(greeting), keyboard=main_keyboard())
+            if not first_contact:
+                await self.send_message(peer_id, greeting_intro(greeting), keyboard=main_keyboard())
             return
 
         # VK stickers/attachments often arrive with an empty text field. Respond like a person instead of
@@ -668,7 +893,8 @@ class VKAdapter:
                 for item in attachments
             )
             self.db.track(user_id=user.user_id, peer_id=user.peer_id, kind="smalltalk", name="sticker" if sticker else "attachment")
-            await self.send_message(peer_id, attachment_intro(sticker=sticker), keyboard=main_keyboard())
+            if not first_contact:
+                await self.send_message(peer_id, attachment_intro(sticker=sticker), keyboard=main_keyboard())
             return
 
         if len(text) > 3500:
@@ -683,6 +909,67 @@ class VKAdapter:
             greeting, rest = split_leading_greeting(text)
             if greeting and rest:
                 question_text = rest
+        if first_contact:
+            greeting = None
+
+        # Safety takes precedence over every optional feature. An urgent message must never be
+        # swallowed by an unfinished booking merely because Smart Handoff is disabled.
+        if not intent and is_urgent_safety(question_text):
+            # An emergency also terminates any unfinished booking. Otherwise the old booking
+            # state (and possibly an external hold) could wake up on the parent's next short
+            # message after the urgent handoff. A booking already submitted to the manager is
+            # intentionally left intact.
+            if self.booking is not None and self.booking.blocks_other_flow(user.user_id):
+                await self.booking.abandon_for_other_flow(user.user_id, reason="urgent_safety")
+            # Clear even a stale persisted intake left from an earlier run where the feature was
+            # enabled. This prevents an old questionnaire from resurfacing if the flag is turned
+            # back on after an emergency.
+            if self.intake is None:
+                self.db.clear_intake_session(user_id=user.user_id)
+            if self.intake is not None:
+                result = await self.intake.handle_text(
+                    IntakeUser(user.user_id, user.peer_id, user.full_name, user.username), question_text
+                )
+            else:
+                result = IntakeResult(
+                    True,
+                    "🔴 Я сразу передам это сообщение специалисту как срочное. Если есть непосредственная угроза жизни или здоровью — одновременно звоните 112.",
+                    state="submit_immediate",
+                    submission=build_urgent_submission(question_text),
+                )
+            await self._send_intake_result(user, result)
+            return
+
+        # Never persist/forward card numbers, CVC/CVV or SMS codes even when Smart Handoff is
+        # disabled. Message analytics above stores metadata only, not the parent text.
+        if not intent and contains_payment_secret(question_text):
+            await self.send_message(
+                user.peer_id,
+                "🔐 Не присылайте номер банковской карты, CVC/CVV или коды из SMS. Удалите эти данные и опишите только саму проблему с оплатой.",
+                keyboard=main_keyboard(),
+            )
+            return
+
+        # If the Google booking backend is intentionally disabled or temporarily unavailable,
+        # explicit booking requests must fail closed to a human instead of looking like a static
+        # extra-services FAQ answer. Informational price/conditions questions still use the FAQ.
+        if not intent and self.booking is None and is_booking_request(question_text):
+            # The parent explicitly switched from an unfinished Smart Handoff to booking. Even
+            # though the booking backend is disabled/misconfigured, do not leave the old form
+            # alive to consume their next reply.
+            if self.intake is not None and self.intake.has_active(user.user_id):
+                self.intake.abandon_for_other_flow(user.user_id)
+            await self._send_booking_result(
+                user,
+                BookingResult(True, state="escalate", error_reason="booking_not_enabled"),
+                original_question=question_text,
+            )
+            return
+
+        if not intent and await self._try_booking_text(user, question_text):
+            return
+        if not intent and await self._try_intake_text(user, question_text):
+            return
 
         await self._process_question(text=question_text or intent or "", intent=intent, user=user, greeting=greeting)
 
@@ -697,6 +984,81 @@ class VKAdapter:
         user = await self._user(user_id, peer_id) if user_id and peer_id else None
         if user:
             self.db.track(user_id=user.user_id, peer_id=user.peer_id, kind="button", name=f"callback:{action}")
+
+        if action == "booking_parent" and user and self.booking is not None:
+            cmd = str(payload.get("cmd") or "")
+            if cmd not in {"confirm", "cancel"}:
+                await self._event_answer(obj, "Неизвестное действие")
+                return
+            result = await self.booking.parent_decision(
+                BookingUser(user.user_id, user.peer_id, user.full_name, user.username),
+                confirm=(cmd == "confirm"),
+            )
+            if result.state == "pending_manager":
+                event_text = "Заявка отправлена менеджеру"
+            elif result.state == "cancelled":
+                event_text = "Заявка отменена"
+            elif result.state == "stale":
+                event_text = "Заявка уже обработана"
+            elif result.state == "escalate":
+                event_text = "Не удалось проверить календарь"
+            else:
+                event_text = "Готово"
+            await self._event_answer(obj, event_text)
+            await self._send_booking_result(user, result, original_question="Подтверждение заявки на бронирование")
+            return
+
+        if action == "booking_manager" and user and self._is_manager(user.user_id) and self.booking is not None:
+            booking_id = str(payload.get("booking_id") or "")
+            cmd = str(payload.get("cmd") or "")
+            if cmd not in {"approve", "reject"} or not booking_id:
+                await self._event_answer(obj, "Некорректная команда")
+                return
+            approve = cmd == "approve"
+            try:
+                result = await self.booking.manager_decision(booking_id=booking_id, manager_id=user.user_id, approve=approve)
+            except BookingAPIError as exc:
+                await self._event_answer(obj, "Не удалось обновить заявку")
+                await self.send_message(user.peer_id, f"⚠️ Заявка {booking_id}: {exc}", keyboard=admin_keyboard())
+                return
+            await self._event_answer(obj, "Бронь подтверждена" if approve else "Заявка отклонена")
+            parent_peer = int(result.get("peer_id") or 0)
+            if parent_peer:
+                parent_text = (
+                    "✅ Менеджер подтвердил Вашу бронь. Заявка окончательно подтверждена 💛"
+                    if approve else
+                    "К сожалению, менеджер не смог подтвердить эту заявку. Если хотите, напишите другую дату или время — я проверю их заново."
+                )
+                await self.send_message(parent_peer, parent_text, keyboard=main_keyboard())
+            await self.send_message(user.peer_id, f"✅ Заявка {booking_id} обновлена.", keyboard=admin_keyboard())
+            return
+
+        if action == "intake_parent" and user:
+            if self.intake is None:
+                await self._event_answer(obj, "Заявка больше неактуальна")
+                await self.send_message(
+                    user.peer_id,
+                    "Эта кнопка относится к ранее начатой заявке, а Smart Handoff сейчас отключён. "
+                    "Напишите вопрос обычным сообщением — я отвечу или передам его специалисту.",
+                    keyboard=main_keyboard(),
+                )
+                return
+            cmd = str(payload.get("cmd") or "")
+            if cmd not in {"confirm", "cancel"}:
+                await self._event_answer(obj, "Неизвестное действие")
+                return
+            result = await self.intake.parent_decision(
+                IntakeUser(user.user_id, user.peer_id, user.full_name, user.username),
+                confirm=(cmd == "confirm"),
+            )
+            event_text = {
+                "submit": "Передаю специалисту",
+                "cancelled": "Заявка отменена",
+                "stale": "Заявка уже обработана",
+            }.get(result.state, "Готово")
+            await self._event_answer(obj, event_text)
+            await self._send_intake_result(user, result)
+            return
 
         if action == "feedback":
             try: feedback_id = int(payload.get("id") or 0)
@@ -754,6 +1116,58 @@ class VKAdapter:
             self.db.set_admin_state(user_id=user.user_id, state="reply_ticket", payload={"ticket_id": ticket_id})
             await self._event_answer(obj, f"Ответ для #{ticket_id}")
             await self.send_message(user.peer_id, f"✍ Напишите следующим сообщением ответ для заявки #{ticket_id}.\n\nДля отмены отправьте #меню.")
+            return
+
+        if action == "knowledge_loop" and user and self._is_manager(user.user_id):
+            if not self.settings.knowledge_loop_enabled:
+                await self._event_answer(obj, "Knowledge Loop отключён")
+                return
+            cmd = str(payload.get("cmd") or "")
+            try:
+                ticket_id = int(payload.get("ticket_id") or 0)
+            except (TypeError, ValueError):
+                ticket_id = 0
+            ticket = self.db.get_ticket(ticket_id) if ticket_id else None
+            if not ticket or str(ticket["status"] or "") != "answered":
+                await self._event_answer(obj, "Ответ уже недоступен")
+                return
+            if str(ticket["knowledge_candidate_status"] or "") != "offered":
+                await self._event_answer(obj, "Уже обработано")
+                return
+            answer_text = str(ticket["human_answer"] or "").strip()
+            allowed, reason = knowledge_candidate_allowed(ticket, answer_text)
+            if not allowed:
+                self.db.set_ticket_knowledge_candidate(ticket_id, "rejected")
+                await self._event_answer(obj, "Нельзя сохранить")
+                await self.send_message(user.peer_id, f"⚠️ Этот ответ нельзя превратить в постоянное знание ({reason}).", keyboard=admin_keyboard())
+                return
+            if cmd == "skip":
+                self.db.set_ticket_knowledge_candidate(ticket_id, "skipped")
+                await self._event_answer(obj, "Не добавляем")
+                return
+            if cmd == "edit":
+                self.db.set_ticket_knowledge_candidate(ticket_id, "editing")
+                self.db.set_admin_state(user_id=user.user_id, state="knowledge_loop_edit", payload={"ticket_id": ticket_id})
+                await self._event_answer(obj, "Пришлите исправленный ответ")
+                await self.send_message(
+                    user.peer_id,
+                    f"✏️ Отправьте следующим сообщением общий ответ для базы знаний по вопросу:\n\n{ticket['question']}\n\n"
+                    "Не включайте персональные данные или временную доступность. Для отмены: #меню",
+                )
+                return
+            if cmd == "add":
+                knowledge_id = self.db.add_manual_knowledge(
+                    question=str(ticket["question"]), answer=answer_text, created_by=user.user_id, kind="permanent"
+                )
+                if knowledge_id:
+                    self.db.set_ticket_knowledge_candidate(ticket_id, "saved", knowledge_id)
+                    await self._event_answer(obj, "Добавлено в базу")
+                    await self.send_message(user.peer_id, f"✅ Знание #{knowledge_id} добавлено. Перезапуск бота не нужен.", keyboard=admin_keyboard())
+                else:
+                    self.db.set_ticket_knowledge_candidate(ticket_id, "duplicate")
+                    await self._event_answer(obj, "Уже есть в базе")
+                return
+            await self._event_answer(obj, "Неизвестное действие")
             return
 
         if action == "admin" and user and self._is_manager(user.user_id):

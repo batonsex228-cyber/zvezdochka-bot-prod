@@ -82,6 +82,35 @@ def manager_ticket_keyboard(ticket_id: int) -> str:
     return _dump([[_callback("✍ Ответить", {"action": "manager_reply", "ticket_id": ticket_id}, "primary")]])
 
 
+
+def parent_booking_confirmation_keyboard() -> str:
+    return _dump([[
+        _callback("✅ Подтвердить заявку", {"action": "booking_parent", "cmd": "confirm"}, "positive"),
+        _callback("❌ Отмена", {"action": "booking_parent", "cmd": "cancel"}, "negative"),
+    ]])
+
+
+def manager_booking_keyboard(booking_id: str) -> str:
+    return _dump([[
+        _callback("✅ Подтвердить", {"action": "booking_manager", "cmd": "approve", "booking_id": booking_id}, "positive"),
+        _callback("❌ Отклонить", {"action": "booking_manager", "cmd": "reject", "booking_id": booking_id}, "negative"),
+    ]])
+
+def parent_intake_confirmation_keyboard() -> str:
+    return _dump([[
+        _callback("✅ Передать специалисту", {"action": "intake_parent", "cmd": "confirm"}, "positive"),
+        _callback("❌ Отмена", {"action": "intake_parent", "cmd": "cancel"}, "negative"),
+    ]])
+
+
+def knowledge_candidate_keyboard(ticket_id: int) -> str:
+    return _dump([
+        [_callback("✅ Добавить в базу", {"action": "knowledge_loop", "cmd": "add", "ticket_id": ticket_id}, "positive")],
+        [_callback("✏️ Изменить ответ", {"action": "knowledge_loop", "cmd": "edit", "ticket_id": ticket_id}, "primary"),
+         _callback("❌ Не добавлять", {"action": "knowledge_loop", "cmd": "skip", "ticket_id": ticket_id}, "negative")],
+    ])
+
+
 def admin_keyboard() -> str:
     return _dump([
         [_callback("📊 Статистика", {"action": "admin", "cmd": "stats"}, "primary"), _callback("🆘 Открытые вопросы", {"action": "admin", "cmd": "open"})],

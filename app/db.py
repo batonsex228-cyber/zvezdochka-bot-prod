@@ -49,6 +49,12 @@ class Database:
                     human_answer TEXT,
                     escalation_reason TEXT,
                     confidence REAL,
+                    intake_type TEXT,
+                    intake_payload_json TEXT,
+                    intake_request_id TEXT,
+                    priority TEXT NOT NULL DEFAULT 'normal',
+                    knowledge_candidate_status TEXT,
+                    knowledge_id INTEGER,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     answered_at TEXT,
                     closed_at TEXT
@@ -137,6 +143,33 @@ class Database:
                     sent_at TEXT
                 );
 
+                CREATE TABLE IF NOT EXISTS booking_sessions (
+                    platform TEXT NOT NULL DEFAULT 'vk',
+                    user_id INTEGER NOT NULL,
+                    peer_id INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    step TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    external_booking_id TEXT,
+                    expires_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(platform,user_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS support_intake_sessions (
+                    platform TEXT NOT NULL DEFAULT 'vk',
+                    user_id INTEGER NOT NULL,
+                    peer_id INTEGER NOT NULL,
+                    intake_type TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    step TEXT NOT NULL DEFAULT '',
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    original_question TEXT NOT NULL DEFAULT '',
+                    expires_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(platform,user_id)
+                );
+
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_faq_unique ON manual_faq(question, answer);
                 CREATE INDEX IF NOT EXISTS idx_ticket_support_message ON tickets(support_message_id);
                 CREATE INDEX IF NOT EXISTS idx_ticket_status ON tickets(status);
@@ -147,6 +180,8 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_interactions_created ON interactions(created_at);
                 CREATE INDEX IF NOT EXISTS idx_interactions_kind ON interactions(kind,name);
                 CREATE INDEX IF NOT EXISTS idx_subscriptions_enabled ON notification_subscriptions(platform,enabled);
+                CREATE INDEX IF NOT EXISTS idx_booking_sessions_external ON booking_sessions(external_booking_id);
+                CREATE INDEX IF NOT EXISTS idx_intake_sessions_type ON support_intake_sessions(intake_type,status);
                 """
             )
 
@@ -157,10 +192,22 @@ class Database:
                 ("confidence", "REAL", None),
                 ("answered_at", "TEXT", None),
                 ("platform", "TEXT", "'vk'"),
+                ("intake_type", "TEXT", None),
+                ("intake_payload_json", "TEXT", None),
+                ("intake_request_id", "TEXT", None),
+                ("priority", "TEXT", "'normal'"),
+                ("knowledge_candidate_status", "TEXT", None),
+                ("knowledge_id", "INTEGER", None),
             ]:
                 if name not in ticket_columns:
                     suffix = f" DEFAULT {default_sql}" if default_sql is not None else ""
                     conn.execute(f"ALTER TABLE tickets ADD COLUMN {name} {sql_type}{suffix}")
+            # Create the v6 idempotency index only after additive migration has added the column
+            # to an existing v5.9 database.
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_intake_request "
+                "ON tickets(intake_request_id) WHERE intake_request_id IS NOT NULL"
+            )
             answer_columns = {row[1] for row in conn.execute("PRAGMA table_info(answer_events)").fetchall()}
             if "platform" not in answer_columns:
                 conn.execute("ALTER TABLE answer_events ADD COLUMN platform TEXT DEFAULT 'vk'")
@@ -182,18 +229,45 @@ class Database:
                 "UPDATE manual_faq SET source='approved_manager_knowledge' "
                 "WHERE source IN ('approved_operator_answer','approved_manager_answer')"
             )
+            # A persisted `submitting` state can only survive if the previous process stopped
+            # between the parent's confirmation and cleanup. On a fresh process there is no
+            # in-flight coroutine, so make the form retryable. Ticket idempotency prevents duplicates.
+            conn.execute(
+                "UPDATE support_intake_sessions SET status='confirm_parent',updated_at=CURRENT_TIMESTAMP "
+                "WHERE status='submitting'"
+            )
 
     # ---------------- tickets / FAQ ----------------
     def create_ticket(self, *, user_id: int, chat_id: int, username: str | None, full_name: str,
                       question: str, reason: str = "", confidence: float = 0.0,
-                      platform: str = "vk") -> int:
+                      platform: str = "vk", intake_type: str | None = None,
+                      intake_payload: dict[str, Any] | None = None, priority: str = "normal",
+                      intake_request_id: str | None = None) -> int:
+        priority = priority if priority in {"low", "normal", "high", "urgent"} else "normal"
         with self._conn() as conn:
             cur = conn.execute(
-                """INSERT INTO tickets(platform,user_id,chat_id,username,full_name,question,escalation_reason,confidence)
-                   VALUES(?,?,?,?,?,?,?,?)""",
-                (platform, user_id, chat_id, username, full_name, question, reason, confidence),
+                """INSERT INTO tickets(platform,user_id,chat_id,username,full_name,question,escalation_reason,confidence,
+                                       intake_type,intake_payload_json,intake_request_id,priority)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (platform, user_id, chat_id, username, full_name, question, reason, confidence,
+                 intake_type, json.dumps(intake_payload or {}, ensure_ascii=False) if intake_type else None,
+                 intake_request_id, priority),
             )
             return int(cur.lastrowid)
+
+    def get_ticket_by_intake_request(self, request_id: str) -> sqlite3.Row | None:
+        request_id = (request_id or "").strip()
+        if not request_id:
+            return None
+        with self._conn() as conn:
+            return conn.execute("SELECT * FROM tickets WHERE intake_request_id=?", (request_id,)).fetchone()
+
+    def reopen_failed_ticket(self, ticket_id: int) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE tickets SET status='open',closed_at=NULL WHERE id=? AND status='failed'",
+                (int(ticket_id),),
+            )
 
     def set_support_message(self, ticket_id: int, message_id: int) -> None:
         with self._conn() as conn:
@@ -227,6 +301,13 @@ class Database:
     def close_ticket(self, ticket_id: int) -> None:
         with self._conn() as conn:
             conn.execute("UPDATE tickets SET status='closed',closed_at=CURRENT_TIMESTAMP WHERE id=?", (ticket_id,))
+
+    def set_ticket_knowledge_candidate(self, ticket_id: int, status: str, knowledge_id: int | None = None) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE tickets SET knowledge_candidate_status=?, knowledge_id=? WHERE id=?",
+                (status, knowledge_id, int(ticket_id)),
+            )
 
     def add_manual_faq(self, question: str, answer: str) -> bool:
         """Backward-compatible helper used by older tests/imports.
@@ -390,6 +471,79 @@ class Database:
             )
             return int(cur.lastrowid)
 
+    def has_seen_user(self, *, user_id: int, platform: str = "vk") -> bool:
+        """Whether this user has any prior interaction recorded before the current message."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM interactions WHERE platform=? AND user_id=? LIMIT 1",
+                (platform, user_id),
+            ).fetchone()
+        return row is not None
+
+    # ---------------- booking sessions ----------------
+    def save_booking_session(self, *, user_id: int, peer_id: int, step: str, status: str,
+                             payload: dict[str, Any], external_booking_id: str | None = None,
+                             ttl_minutes: int = 60, platform: str = "vk") -> None:
+        expires = datetime.now(timezone.utc) + timedelta(minutes=max(5, ttl_minutes))
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO booking_sessions(platform,user_id,peer_id,status,step,payload_json,external_booking_id,expires_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                   ON CONFLICT(platform,user_id) DO UPDATE SET peer_id=excluded.peer_id,status=excluded.status,
+                     step=excluded.step,payload_json=excluded.payload_json,external_booking_id=excluded.external_booking_id,
+                     expires_at=excluded.expires_at,updated_at=CURRENT_TIMESTAMP""",
+                (platform, user_id, peer_id, status, step, json.dumps(payload, ensure_ascii=False), external_booking_id, expires.isoformat()),
+            )
+
+    def get_booking_session(self, *, user_id: int, platform: str = "vk") -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT peer_id,status,step,payload_json,external_booking_id,expires_at FROM booking_sessions WHERE platform=? AND user_id=?",
+                (platform, user_id),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            expires = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if expires < datetime.now(timezone.utc):
+                self.clear_booking_session(user_id=user_id, platform=platform)
+                return None
+        except ValueError:
+            self.clear_booking_session(user_id=user_id, platform=platform)
+            return None
+        try:
+            payload = json.loads(str(row["payload_json"] or "{}"))
+            if not isinstance(payload, dict):
+                payload = {}
+        except json.JSONDecodeError:
+            payload = {}
+        return {
+            "peer_id": int(row["peer_id"]), "status": str(row["status"] or ""),
+            "step": str(row["step"] or ""), "payload": payload,
+            "external_booking_id": str(row["external_booking_id"] or ""),
+            "expires_at": str(row["expires_at"] or ""),
+        }
+
+    def clear_booking_session(self, *, user_id: int, platform: str = "vk") -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM booking_sessions WHERE platform=? AND user_id=?", (platform, user_id))
+
+    def find_booking_session_by_external_id(self, booking_id: str, *, platform: str = "vk") -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT user_id,peer_id,status,step,payload_json,expires_at FROM booking_sessions WHERE platform=? AND external_booking_id=?",
+                (platform, booking_id),
+            ).fetchone()
+        if not row:
+            return None
+        try:
+            payload = json.loads(str(row["payload_json"] or "{}"))
+        except json.JSONDecodeError:
+            payload = {}
+        return {"user_id": int(row["user_id"]), "peer_id": int(row["peer_id"]), "status": str(row["status"] or ""), "step": str(row["step"] or ""), "payload": payload}
+
     def analytics_stats(self, *, days: int | None = 30, platform: str = "vk") -> dict[str, Any]:
         p: list[Any] = [platform]
         where = "platform=?"
@@ -428,6 +582,104 @@ class Database:
             "top_buttons": [(str(r["name"]), int(r["c"])) for r in top_buttons],
             "bad_faq": [(str(r["faq"]), int(r["c"])) for r in bad_faq],
         }
+
+    # ---------------- Smart Handoff intake sessions ----------------
+    def save_intake_session(
+        self, *, user_id: int, peer_id: int, intake_type: str, step: str, status: str,
+        payload: dict[str, Any], ttl_minutes: int = 90, platform: str = "vk",
+        original_question: str = "",
+    ) -> None:
+        expires = datetime.now(timezone.utc) + timedelta(minutes=max(1, int(ttl_minutes)))
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO support_intake_sessions(
+                       platform,user_id,peer_id,intake_type,status,step,payload_json,original_question,expires_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                   ON CONFLICT(platform,user_id) DO UPDATE SET
+                     peer_id=excluded.peer_id,intake_type=excluded.intake_type,status=excluded.status,
+                     step=excluded.step,payload_json=excluded.payload_json,original_question=excluded.original_question,
+                     expires_at=excluded.expires_at,updated_at=CURRENT_TIMESTAMP""",
+                (platform, int(user_id), int(peer_id), intake_type, status, step,
+                 json.dumps(payload or {}, ensure_ascii=False), original_question, expires.isoformat()),
+            )
+
+    @staticmethod
+    def _intake_row(row: sqlite3.Row | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        try:
+            payload = json.loads(str(row["payload_json"] or "{}"))
+            if not isinstance(payload, dict):
+                payload = {}
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        return {
+            "peer_id": int(row["peer_id"]),
+            "intake_type": str(row["intake_type"]),
+            "status": str(row["status"]),
+            "step": str(row["step"]),
+            "payload": payload,
+            "original_question": str(row["original_question"] or ""),
+            "expires_at": str(row["expires_at"]),
+            "updated_at": str(row["updated_at"] or ""),
+        }
+
+    def get_intake_session(self, *, user_id: int, platform: str = "vk") -> dict[str, Any] | None:
+        now = datetime.now(timezone.utc)
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM support_intake_sessions WHERE platform=? AND user_id=?", (platform, int(user_id))
+            ).fetchone()
+            if row is None:
+                return None
+            try:
+                expires = datetime.fromisoformat(str(row["expires_at"]).replace("Z", "+00:00"))
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+            except ValueError:
+                expires = now - timedelta(seconds=1)
+            if expires.astimezone(timezone.utc) <= now:
+                conn.execute("DELETE FROM support_intake_sessions WHERE platform=? AND user_id=?", (platform, int(user_id)))
+                return None
+            return self._intake_row(row)
+
+    def clear_intake_session(self, *, user_id: int, platform: str = "vk") -> None:
+        with self._conn() as conn:
+            conn.execute("DELETE FROM support_intake_sessions WHERE platform=? AND user_id=?", (platform, int(user_id)))
+
+    def claim_intake_submission(self, *, user_id: int, platform: str = "vk") -> dict[str, Any] | None:
+        """Atomically move confirm_parent -> submitting to prevent duplicate callback tickets."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM support_intake_sessions WHERE platform=? AND user_id=?", (platform, int(user_id))
+            ).fetchone()
+            if row is None or str(row["status"] or "") != "confirm_parent":
+                return None
+            cur = conn.execute(
+                """UPDATE support_intake_sessions SET status='submitting',updated_at=CURRENT_TIMESTAMP
+                   WHERE platform=? AND user_id=? AND status='confirm_parent'""",
+                (platform, int(user_id)),
+            )
+            if cur.rowcount != 1:
+                return None
+            fresh = conn.execute(
+                "SELECT * FROM support_intake_sessions WHERE platform=? AND user_id=?", (platform, int(user_id))
+            ).fetchone()
+            return self._intake_row(fresh)
+
+    def release_intake_submission(self, *, user_id: int, platform: str = "vk") -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """UPDATE support_intake_sessions
+                   SET status='confirm_parent',step='confirm_parent',updated_at=CURRENT_TIMESTAMP
+                   WHERE platform=? AND user_id=? AND status='submitting'""",
+                (platform, int(user_id)),
+            )
+
+    def intake_session_count(self, *, active_only: bool = True) -> int:
+        where = "WHERE datetime(expires_at) > datetime('now')" if active_only else ""
+        with self._conn() as conn:
+            return int(conn.execute(f"SELECT COUNT(*) FROM support_intake_sessions {where}").fetchone()[0])
 
     # ---------------- short context ----------------
     def set_context(self, *, user_id: int, topic: str | None, entity: str | None,

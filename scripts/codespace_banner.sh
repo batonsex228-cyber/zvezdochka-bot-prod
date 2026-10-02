@@ -3,7 +3,7 @@ set -u
 cat <<'TXT'
 
 ============================================================
- ZVEZDOCHKA BOT v5.7 - VK-FIRST
+ ZVEZDOCHKA BOT v6.0 - SMART HANDOFF · VK-FIRST
 ============================================================
 Required Codespaces secrets:
   VK_GROUP_TOKEN

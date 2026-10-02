@@ -23,6 +23,29 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on", "да"}
 
 
+def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    """Optional feature knobs must not take the whole support bot down on a typo."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return default
+    return max(minimum, min(value, maximum))
+
+
+def _bounded_float_env(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        return default
+    return max(minimum, min(value, maximum))
+
+
 def _normalize_site_url(raw: str) -> str:
     """Migrate the retired /new/ site prefix without requiring a server .env edit."""
     value = raw.strip()
@@ -68,6 +91,20 @@ class Settings:
     # Conversation quality / admin features.
     context_ttl_minutes: int = 15
     newsletters_enabled: bool = True
+
+    # Optional booking module. Disabled until Google Apps Script is configured.
+    bookings_enabled: bool = False
+    booking_api_url: str | None = None
+    booking_api_secret: str | None = None
+    booking_timezone: str = "Europe/Samara"
+    booking_hold_minutes: int = 15
+    booking_timeout_seconds: float = 15.0
+
+    # v6.0 Smart Handoff / reusable-knowledge loop. Opt-in for safe rollout.
+    # Enable only after the new image is deployed and the manager flow is smoke-tested.
+    smart_handoff_enabled: bool = False
+    smart_handoff_ttl_minutes: int = 90
+    knowledge_loop_enabled: bool = False
 
 
 def load_settings() -> Settings:
@@ -121,4 +158,13 @@ def load_settings() -> Settings:
         vk_source_max_age_days=max(1, min(int(os.getenv("VK_SOURCE_MAX_AGE_DAYS", "60")), 365)),
         context_ttl_minutes=max(1, min(int(os.getenv("CONTEXT_TTL_MINUTES", "15")), 120)),
         newsletters_enabled=_bool_env("NEWSLETTERS_ENABLED", True),
+        bookings_enabled=_bool_env("BOOKINGS_ENABLED", False),
+        booking_api_url=os.getenv("BOOKING_API_URL", "").strip() or None,
+        booking_api_secret=os.getenv("BOOKING_API_SECRET", "").strip() or None,
+        booking_timezone=os.getenv("BOOKING_TIMEZONE", "Europe/Samara").strip() or "Europe/Samara",
+        booking_hold_minutes=_bounded_int_env("BOOKING_HOLD_MINUTES", 15, 5, 60),
+        booking_timeout_seconds=_bounded_float_env("BOOKING_TIMEOUT_SECONDS", 15.0, 3.0, 60.0),
+        smart_handoff_enabled=_bool_env("SMART_HANDOFF_ENABLED", False),
+        smart_handoff_ttl_minutes=_bounded_int_env("SMART_HANDOFF_TTL_MINUTES", 90, 15, 24 * 60),
+        knowledge_loop_enabled=_bool_env("KNOWLEDGE_LOOP_ENABLED", False),
     )

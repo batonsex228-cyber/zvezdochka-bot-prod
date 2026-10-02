@@ -4,11 +4,13 @@ import asyncio
 import traceback
 from pathlib import Path
 
+from .booking import BookingEngine
 from .config import PROJECT_ROOT, Settings, load_settings
 from .core import SupportCore
 from .crawler import crawl_site
 from .db import Database
 from .knowledge import KnowledgeBase
+from .intake import SmartHandoffEngine
 from .operator import OperatorBridge
 from .responder import StrictResponder
 from .version import VERSION
@@ -36,7 +38,31 @@ async def run() -> int:
     responder = StrictResponder(settings, kb)
     core = SupportCore(responder, show_source_links=settings.show_source_links)
     operator = OperatorBridge(settings, db)
-    vk = VKAdapter(settings, core, db, operator, knowledge_base=kb)
+    booking = None
+    booking_disabled_reason: str | None = None
+    if settings.bookings_enabled:
+        if not settings.booking_api_url or not settings.booking_api_secret:
+            booking_disabled_reason = "BOOKING_API_URL/BOOKING_API_SECRET are missing"
+        elif not settings.vk_manager_user_id:
+            booking_disabled_reason = "VK_MANAGER_USER_ID is required for manager approval"
+        else:
+            try:
+                booking = BookingEngine(settings, db)
+            except Exception as exc:
+                booking_disabled_reason = f"{type(exc).__name__}: {exc}"
+    intake = None
+    intake_disabled_reason: str | None = None
+    if settings.smart_handoff_enabled:
+        if not settings.vk_manager_user_id:
+            intake_disabled_reason = "VK_MANAGER_USER_ID is required"
+        else:
+            try:
+                intake = SmartHandoffEngine(settings, db)
+            except Exception as exc:
+                # Smart Handoff must never prevent the already-working support bot from starting.
+                intake_disabled_reason = f"{type(exc).__name__}: {exc}"
+
+    vk = VKAdapter(settings, core, db, operator, knowledge_base=kb, booking=booking, intake=intake)
     operator.set_vk_sender(vk.send_plain_from_operator)
     operator.set_vk_marker(vk.mark_support_conversation)
     if settings.vk_manager_user_id:
@@ -47,6 +73,21 @@ async def run() -> int:
     print(f"      Website KB bundled pages: {len(kb.pages)}")
     print(f"      AI layer: {'ON (' + settings.openai_model + ')' if settings.openai_api_key else 'OFF (strict FAQ + human handoff)'}")
     print(f"      Recent VK posts: {'OPTIONAL TOKEN PRESENT' if settings.vk_content_token else 'DISABLED (optional)'}")
+    if booking is not None:
+        print("      Booking: ON (Google Sheet)")
+    elif settings.bookings_enabled:
+        print(f"      Booking: OFF — safe human handoff ({booking_disabled_reason or 'configuration error'})")
+    else:
+        print("      Booking: OFF (safe human handoff)")
+
+    if intake is not None:
+        print("      Smart Handoff: ON")
+    elif settings.smart_handoff_enabled:
+        print(f"      Smart Handoff: OFF — safe standard handoff ({intake_disabled_reason or 'configuration error'})")
+    else:
+        print("      Smart Handoff: OFF")
+    knowledge_loop_on = bool(settings.knowledge_loop_enabled and settings.vk_manager_user_id)
+    print(f"      Knowledge Loop: {'ON' if knowledge_loop_on else 'OFF'}")
 
     print("[2/4] Checking VK API...")
     await vk.validate()
@@ -57,6 +98,14 @@ async def run() -> int:
             print(f"      Manager inbox: {'OK' if allowed else 'BLOCKED — manager must message community first'}")
         except Exception as exc:
             print(f"      Manager inbox: could not verify ({exc})")
+    if booking is not None:
+        try:
+            health = await booking.health()
+            print(f"      Booking calendar: OK — API v{health.get('version') or '?'}")
+        except Exception as exc:
+            # Do not take the whole support bot down if Google is temporarily unavailable.
+            # Booking requests themselves fail closed and are handed to a human.
+            print(f"      Booking calendar: UNAVAILABLE — safe handoff mode ({type(exc).__name__}: {exc})")
 
     print("[3/4] Preparing knowledge sources...")
     try:
