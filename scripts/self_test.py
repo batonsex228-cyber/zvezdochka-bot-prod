@@ -18,7 +18,7 @@ def fail(message: str) -> int:
 
 
 def main() -> int:
-    print("[SELFTEST] Release: v6.0.0 SMART HANDOFF + KNOWLEDGE LOOP · VK-FIRST", flush=True)
+    print("[SELFTEST] Release: v6.0.1 BOOKING TRANSPORT HOTFIX + SMART HANDOFF · VK-FIRST", flush=True)
 
     print("[SELFTEST] Python compile...", flush=True)
     for rel in ["app", "scripts", "tests"]:
@@ -116,7 +116,7 @@ def main() -> int:
     print("  OK: preflight + rebuild_kb --help", flush=True)
 
     print("[SELFTEST] Launchers / Codespaces...", flush=True)
-    for name in ["START_CODESPACE.sh", "CHECK_CODESPACE.sh", "start.sh", "scripts/codespace_setup.sh", "scripts/codespace_banner.sh", "APPLY_V571.sh", "APPLY_V572.sh", "APPLY_V58.sh", "APPLY_V59.sh", "APPLY_V60.sh"]:
+    for name in ["START_CODESPACE.sh", "CHECK_CODESPACE.sh", "start.sh", "scripts/codespace_setup.sh", "scripts/codespace_banner.sh", "APPLY_V571.sh", "APPLY_V572.sh", "APPLY_V58.sh", "APPLY_V59.sh", "APPLY_V60.sh", "APPLY_V601.sh"]:
         path = ROOT / name
         if not path.exists():
             return fail(f"missing launcher {name}")
@@ -138,15 +138,15 @@ def main() -> int:
         print("  OK: VK-first devcontainer secrets", flush=True)
 
     print("[SELFTEST] Release docs...", flush=True)
-    release_docs = ["README.md", "CHANGELOG_v5_7.md", "PATCH_v5_7_README.md", "CHANGELOG_v5_7_4.md", "PATCH_v5_7_4_README.md", "CHANGELOG_v5_8.md", "PATCH_v5_8_README.md", "CHANGELOG_v5_9.md", "PATCH_v5_9_README.md", "CHANGELOG_v6_0.md", "PATCH_v6_0_README.md", "SMART_HANDOFF_GUIDE.md", "google_apps_script/Code.gs", "google_apps_script/SETUP_RU.md", "KNOWLEDGE_BASE_GUIDE.md", "VK_TEST_SETUP.md", "SERVER_DEPLOY.md"]
+    release_docs = ["README.md", "CHANGELOG_v5_7.md", "PATCH_v5_7_README.md", "CHANGELOG_v5_7_4.md", "PATCH_v5_7_4_README.md", "CHANGELOG_v5_8.md", "PATCH_v5_8_README.md", "CHANGELOG_v5_9.md", "PATCH_v5_9_README.md", "CHANGELOG_v6_0.md", "PATCH_v6_0_README.md", "CHANGELOG_v6_0_1.md", "PATCH_v6_0_1_README.md", "SMART_HANDOFF_GUIDE.md", "google_apps_script/Code.gs", "google_apps_script/SETUP_RU.md", "KNOWLEDGE_BASE_GUIDE.md", "VK_TEST_SETUP.md", "SERVER_DEPLOY.md"]
     for rel in release_docs:
         path = ROOT / rel
         if not path.exists():
             return fail(f"missing release document {rel}")
-    for rel in ["CHANGELOG_v6_0.md", "PATCH_v6_0_README.md", "SMART_HANDOFF_GUIDE.md"]:
+    for rel in ["CHANGELOG_v6_0.md", "PATCH_v6_0_README.md", "CHANGELOG_v6_0_1.md", "PATCH_v6_0_1_README.md", "SMART_HANDOFF_GUIDE.md"]:
         if "6.0" not in (ROOT / rel).read_text(encoding="utf-8"):
             return fail(f"release document does not mention v6.0: {rel}")
-    print("  OK: v6.0 release documentation", flush=True)
+    print("  OK: v6.0/v6.0.1 release documentation", flush=True)
 
     print(f"\nALL OFFLINE TESTS PASSED — {count} TESTS", flush=True)
     return 0

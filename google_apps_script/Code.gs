@@ -1,5 +1,5 @@
 /**
- * ZVEZDOCHKA BOOKING BRIDGE v5.9.0
+ * ZVEZDOCHKA BOOKING BRIDGE v5.9.1
  * Bound to one Google Sheet. Deploy as Web App (execute as owner).
  * The bot authenticates with API_SECRET stored in Script Properties.
  */
@@ -52,7 +52,7 @@ function setupSpreadsheet() {
     settings.getRange(2,1,3,3).setValues([
       ['timezone','Europe/Samara','Часовой пояс лагеря'],
       ['hold_minutes','15','Сколько минут держать временную бронь'],
-      ['version','5.9.0','Версия схемы'],
+      ['version','5.9.1','Версия схемы'],
     ]);
   }
   services.setFrozenRows(1); blocks.setFrozenRows(1); settings.setFrozenRows(1);
@@ -68,7 +68,7 @@ function setupSpreadsheet() {
 }
 
 function doGet() {
-  return json_({ok:true, result:{service:'zvezdochka-booking', version:'5.9.0'}});
+  return json_({ok:true, result:{service:'zvezdochka-booking', version:'5.9.1'}});
 }
 
 function doPost(e) {
@@ -78,9 +78,10 @@ function doPost(e) {
     if (!expected || String(body.secret || '') !== expected) return json_({ok:false,error:'unauthorized'});
     const action = String(body.action || '');
     const payload = body.payload && typeof body.payload === 'object' ? body.payload : {};
+    if (!payload.request_id && body.request_id) payload.request_id = String(body.request_id);
     cleanupExpiredHolds_();
     let result;
-    if (action === 'health') result = {healthy:true, version:'5.9.0'};
+    if (action === 'health') result = {healthy:true, version:'5.9.1'};
     else if (action === 'get_service') result = getService_(payload);
     else if (action === 'check_availability') result = checkAvailability_(payload);
     else if (action === 'create_hold') result = createHold_(payload);
@@ -271,6 +272,23 @@ function createHold_(payload) {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(8000)) throw new Error('busy_retry');
   try {
+    const requestId = String(payload.request_id || '').trim();
+    if (requestId) {
+      const marker = 'request_id:' + requestId;
+      const existing = rows_(SHEETS.BOOKINGS).find(r => String(r.comment || '') === marker);
+      if (existing) {
+        const active = activeStatus_(existing.status);
+        return {
+          available:active,
+          booking_id:String(existing.booking_id || ''),
+          expires_at:existing.expires_at ? new Date(existing.expires_at).toISOString() : '',
+          resource_key:String(existing.resource_key || ''),
+          resource_name:String(existing.resource_name || ''),
+          already:true,
+          reason:active ? '' : 'request_already_processed'
+        };
+      }
+    }
     const availability = checkAvailability_(payload);
     if (!availability.available) return {available:false,reason:String(availability.reason || 'occupied'),conflicts:availability.conflicts,alternatives:[]};
     const service = getService_({service_key:payload.service_key});
@@ -284,7 +302,8 @@ function createHold_(payload) {
       booking_id:bookingId,status:'hold',service_key:service.service_key,service_name:service.service_name,
       resource_key:resourceKey,resource_name:resourceName,start_at:new Date(payload.start_at),
       end_at:new Date(payload.end_at),full_name:'',phone:'',guest_count:Number(payload.guest_count || 0),
-      vk_user_id:String(payload.vk_user_id || ''),vk_peer_id:String(payload.vk_peer_id || ''),source:'VK bot',comment:'',
+      vk_user_id:String(payload.vk_user_id || ''),vk_peer_id:String(payload.vk_peer_id || ''),source:'VK bot',
+      comment:requestId ? ('request_id:' + requestId) : '',
       created_at:now,updated_at:now,expires_at:expires,manager_id:''
     });
     return {available:true,booking_id:bookingId,expires_at:expires.toISOString(),resource_key:resourceKey,resource_name:resourceName};
@@ -301,6 +320,9 @@ function submitBooking_(payload) {
   try {
     const row = findBooking_(payload.booking_id);
     if (!row) return {submitted:false,message:'Заявка не найдена.'};
+    if (['pending_manager','confirmed'].indexOf(String(row.status)) >= 0) {
+      return {submitted:true,booking_id:String(row.booking_id),already:true};
+    }
     if (String(row.status) !== 'hold') return {submitted:false,message:'Временная бронь уже неактивна.'};
     const exp = new Date(row.expires_at);
     if (!isNaN(exp) && exp.getTime() < Date.now()) {
@@ -340,8 +362,16 @@ function managerDecision_(payload) {
   try {
     const row = findBooking_(payload.booking_id);
     if (!row) return {updated:false,message:'Заявка не найдена.'};
-    if (String(row.status) !== 'pending_manager') return {updated:false,message:'Заявка уже обработана.'};
     const next = String(payload.decision) === 'confirmed' ? 'confirmed' : 'rejected';
+    if (String(row.status) === next) {
+      return {
+        updated:true,already:true,booking_id:String(row.booking_id),status:next,
+        vk_user_id:String(row.vk_user_id || ''),vk_peer_id:String(row.vk_peer_id || ''),
+        service_name:String(row.service_name || ''),resource_name:String(row.resource_name || ''),
+        start_at:String(row.start_at || ''),end_at:String(row.end_at || '')
+      };
+    }
+    if (String(row.status) !== 'pending_manager') return {updated:false,message:'Заявка уже обработана.'};
     if (next === 'confirmed') {
       const stillFree = checkAvailability_({
         service_key:String(row.service_key || ''), resource_key:String(row.resource_key || ''),

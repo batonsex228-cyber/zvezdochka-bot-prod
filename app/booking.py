@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any, Protocol
@@ -32,26 +34,102 @@ class AppsScriptBookingBackend:
         self.secret = settings.booking_api_secret
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(settings.booking_timeout_seconds, connect=8.0),
-            follow_redirects=True,
+            follow_redirects=False,
         )
 
+    @staticmethod
+    def _is_google_content_url(url: httpx.URL) -> bool:
+        host = (url.host or "").lower()
+        return host == "script.googleusercontent.com" or host.endswith(".googleusercontent.com")
+
+    async def _request_once(self, body: dict[str, Any]) -> httpx.Response:
+        # Apps Script ContentService replies with a 302 to a one-time
+        # script.googleusercontent.com URL. Follow that hop explicitly as GET.
+        # This is more reliable than delegating the POST redirect semantics to the
+        # HTTP client and lets us restart from /exec when the one-time URL expires.
+        response = await self.client.post(
+            self.url,
+            params={"_cb": uuid.uuid4().hex},
+            json=body,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Cache-Control": "no-cache, no-store",
+            },
+            follow_redirects=False,
+        )
+        if response.status_code in {301, 302, 303, 307, 308}:
+            location = response.headers.get("location")
+            if not location:
+                return response
+            redirect_url = response.url.join(location)
+            if self._is_google_content_url(redirect_url):
+                return await self.client.get(
+                    redirect_url,
+                    headers={"Accept": "application/json", "Cache-Control": "no-cache, no-store"},
+                    follow_redirects=True,
+                )
+            # Non-ContentService redirects are unusual here, but follow them as a
+            # normal GET rather than re-POSTing credentials to a different host.
+            return await self.client.get(redirect_url, follow_redirects=True)
+        return response
+
     async def call(self, action: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
-        try:
-            response = await self.client.post(
-                self.url,
-                json={"secret": self.secret, "action": action, "payload": payload or {}},
-                headers={"Content-Type": "application/json"},
-            )
-            response.raise_for_status()
-            data = response.json()
-        except Exception as exc:
-            raise BookingAPIError(f"booking API request failed: {type(exc).__name__}: {exc}") from exc
-        if not isinstance(data, dict):
-            raise BookingAPIError("booking API returned non-object JSON")
-        if data.get("ok") is not True:
-            raise BookingAPIError(str(data.get("error") or "booking API rejected request"))
-        result = data.get("result")
-        return result if isinstance(result, dict) else {}
+        request_id = uuid.uuid4().hex
+        body = {
+            "secret": self.secret,
+            "action": action,
+            "request_id": request_id,
+            "payload": dict(payload or {}),
+        }
+        # Pass the idempotency token to the bridge as part of the action payload as
+        # well. The updated Apps Script uses it to de-duplicate create_hold retries.
+        body["payload"].setdefault("request_id", request_id)
+
+        retry_statuses = {404, 408, 425, 429, 500, 502, 503, 504}
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = await self._request_once(body)
+                if response.status_code in retry_statuses and attempt < 2:
+                    await asyncio.sleep(0.25 * (2 ** attempt))
+                    continue
+                response.raise_for_status()
+                try:
+                    data = response.json()
+                except Exception as exc:
+                    if attempt < 2:
+                        last_exc = exc
+                        await asyncio.sleep(0.25 * (2 ** attempt))
+                        continue
+                    raise
+            except httpx.TransportError as exc:
+                last_exc = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.25 * (2 ** attempt))
+                    continue
+                raise BookingAPIError(f"booking API request failed: {type(exc).__name__}: {exc}") from exc
+            except Exception as exc:
+                last_exc = exc
+                if attempt < 2 and isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in retry_statuses:
+                    await asyncio.sleep(0.25 * (2 ** attempt))
+                    continue
+                raise BookingAPIError(f"booking API request failed: {type(exc).__name__}: {exc}") from exc
+
+            if not isinstance(data, dict):
+                raise BookingAPIError("booking API returned non-object JSON")
+            if data.get("ok") is not True:
+                error = str(data.get("error") or "booking API rejected request")
+                if error == "busy_retry" and attempt < 2:
+                    await asyncio.sleep(0.25 * (2 ** attempt))
+                    continue
+                raise BookingAPIError(error)
+            result = data.get("result")
+            return result if isinstance(result, dict) else {}
+
+        if last_exc is not None:
+            raise BookingAPIError(f"booking API request failed: {type(last_exc).__name__}: {last_exc}") from last_exc
+        raise BookingAPIError("booking API request failed after retries")
 
     async def close(self) -> None:
         await self.client.aclose()

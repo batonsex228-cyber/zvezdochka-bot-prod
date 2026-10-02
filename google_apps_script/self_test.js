@@ -152,6 +152,18 @@ const hold1 = post('create_hold', {
 });
 assert(hold1.result.available && hold1.result.booking_id, 'first hold failed');
 
+// Retrying the same create_hold after a lost ContentService redirect must not
+// create a duplicate row. The bridge de-duplicates by request_id.
+const retryPayload = {
+  service_key: 'gazebo', start_at: '2030-10-12T20:00:00+04:00', end_at: '2030-10-12T22:00:00+04:00',
+  guest_count: 10, vk_user_id: 3, vk_peer_id: 3, ttl_minutes: 15, request_id: 'REQ-IDEMPOTENT-1',
+};
+const retryHold1 = post('create_hold', retryPayload);
+const retryHold2 = post('create_hold', retryPayload);
+assert(retryHold1.result.available && retryHold2.result.available, 'idempotent hold retry failed');
+assert(retryHold1.result.booking_id === retryHold2.result.booking_id, 'create_hold retry created a duplicate booking');
+assert(retryHold2.result.already === true, 'duplicate create_hold was not marked already');
+
 const hold2 = post('create_hold', {
   service_key: 'gazebo', start_at: '2030-10-12T16:00:00+04:00', end_at: '2030-10-12T18:00:00+04:00',
   guest_count: 10, vk_user_id: 2, vk_peer_id: 2, ttl_minutes: 15,
@@ -179,5 +191,20 @@ assert(submit.result.submitted, 'submit failed');
 
 const decision = post('manager_decision', {booking_id: hold3.result.booking_id, decision: 'confirmed', manager_id: 9});
 assert(decision.result.updated && decision.result.status === 'confirmed', 'manager confirmation failed');
+
+// Multiple gazebo resources must behave as a shared pool: if gazebo-1 is occupied,
+// the same service/time should be placed into another free resource.
+services.getRange(4,1,1,13).setValues([[
+  true,'gazebo','Беседка','gazebo-2','Беседка №2','hourly',
+  new Date('2030-01-01T06:00:00Z'),new Date('2030-01-01T18:00:00Z'),60,720,50,true,'test resource 2'
+]]);
+const pooledService = post('get_service', {service_key: 'gazebo'});
+assert(pooledService.result.enabled && pooledService.result.resource_key === '', 'multi-resource service must expose a resource pool');
+const pooledHold = post('create_hold', {
+  service_key: 'gazebo', start_at: '2030-10-12T18:00:00+04:00', end_at: '2030-10-12T20:00:00+04:00',
+  guest_count: 10, vk_user_id: 4, vk_peer_id: 4, ttl_minutes: 15, request_id: 'REQ-POOL-1',
+});
+assert(pooledHold.result.available, 'pooled gazebo should find another free resource');
+assert(pooledHold.result.resource_key === 'gazebo-2', 'pooled gazebo did not choose gazebo-2 when gazebo-1 was occupied');
 
 console.log('GOOGLE APPS SCRIPT OFFLINE SELF-TEST: PASS');

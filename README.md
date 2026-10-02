@@ -155,3 +155,7 @@ ALL OFFLINE TESTS PASSED — 301 TESTS
 Финальная серверная сборка v6.0.0 прошла дополнительный независимый предрелизный аудит: **323/323 offline tests**, Google Apps Script self-test, additive SQLite migration и чистое сравнение PATCH-over-v5.9 с FULL CLEAN. Новые функции остаются opt-in через `.env`.
 
 Дополнительно проверены fail-closed сценарии: явное бронирование при выключенном/не настроенном Google Booking уходит человеку; срочное обращение прерывает незавершённую бронь и освобождает hold; платёжные секреты не сохраняются даже при выключенном Smart Handoff; общие вопросы о пожарной безопасности/буллинге не маскируются под текущую чрезвычайную ситуацию. Политика выдачи телефонов из старого FAQ имела `valid_until=2026-10-01T00:00:00+03:00`; после истечения она намеренно не продлевается автоматически и безопасно уходит на уточнение менеджеру.
+
+## v6.0.1 — Booking transport hotfix
+
+Production hotfix for intermittent Google Apps Script `ContentService` one-time redirect failures (`script.googleusercontent.com` 404). The bot now follows the redirect explicitly as GET, retries from the original `/exec` endpoint, and the Apps Script bridge de-duplicates mutating retries. Existing Google Sheets and SQLite data are preserved.

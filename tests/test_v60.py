@@ -66,7 +66,7 @@ def core_env(tmp: Path, s: Settings, db: Database):
 
 class V60ReleaseTests(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(VERSION, "6.0.0")
+        self.assertEqual(VERSION, "6.0.1")
 
     def test_env_flags_are_safe_off(self):
         text = (ROOT / ".env.example").read_text(encoding="utf-8")
