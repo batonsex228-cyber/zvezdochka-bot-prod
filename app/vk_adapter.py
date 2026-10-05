@@ -10,15 +10,18 @@ from typing import Any
 
 import httpx
 
-from .booking import BookingAPIError, BookingEngine, BookingResult, BookingUser, is_booking_request
+from .booking import BookingAPIError, BookingEngine, BookingResult, BookingUser, is_booking_request, public_rental_info
 from .config import Settings
 from .core import SupportCore
-from .conversation import attachment_intro, greeting_intro, is_greeting_only, split_leading_greeting, with_greeting
+from .conversation import (
+    attachment_intro, classify_social_only, greeting_intro, is_greeting_only,
+    social_reply, split_leading_greeting, with_greeting,
+)
 from .db import Database
 from .intent_router import IntentDecision, route
 from .intake import (
     IntakeResult, IntakeUser, SmartHandoffEngine, build_urgent_submission,
-    contains_payment_secret, is_urgent_safety,
+    contains_payment_secret, is_urgent_safety, public_event_info, classify_transaction,
 )
 from .knowledge_loop import knowledge_candidate_allowed
 from .operator import OperatorBridge
@@ -65,6 +68,7 @@ class VKAdapter:
     """VK community bot using Bots Long Poll. No Telegram dependency."""
 
     API_BASE = "https://api.vk.com/method/"
+    TYPING_REFRESH_SECONDS = 4.0
 
     def __init__(self, settings: Settings, core: SupportCore, db: Database, operator: OperatorBridge, *, knowledge_base=None, booking: BookingEngine | None = None, intake: SmartHandoffEngine | None = None):
         if not settings.vk_group_token or not settings.vk_group_id:
@@ -227,6 +231,30 @@ class VKAdapter:
         except Exception:
             pass
 
+    async def _typing_keepalive(self, peer_id: int) -> None:
+        """Refresh VK's short-lived "typing" activity while a handler is busy.
+
+        Google Booking calls can take several seconds.  A single setActivity call may
+        disappear before the reply is ready, so refresh it every four seconds until
+        the whole incoming update finishes.
+        """
+        try:
+            while True:
+                await self.typing(peer_id)
+                await asyncio.sleep(self.TYPING_REFRESH_SECONDS)
+        except asyncio.CancelledError:
+            return
+
+    @staticmethod
+    def _update_peer_id(update: dict[str, Any]) -> int:
+        obj = update.get("object") or {}
+        if not isinstance(obj, dict):
+            return 0
+        if str(update.get("type") or "") == "message_new":
+            message = obj.get("message") if isinstance(obj.get("message"), dict) else obj
+            return int(message.get("peer_id") or message.get("from_id") or 0)
+        return int(obj.get("peer_id") or 0)
+
     async def _event_answer(self, obj: dict[str, Any], text: str) -> None:
         event_id, user_id, peer_id = obj.get("event_id"), obj.get("user_id"), obj.get("peer_id")
         if not event_id or not user_id or not peer_id:
@@ -326,7 +354,6 @@ class VKAdapter:
         self._remember(user.user_id, decision)
         core_intent = "dynamic_availability" if decision.entity in {"extra_service_dynamic", "current_availability"} else resolved_intent
 
-        await self.typing(user.peer_id)
         print(f"[vk] message: user_id={user.user_id} intent={resolved_intent or '-'}", flush=True)
         result = await self.core.process(text, intent=core_intent)
         answer = result.answer
@@ -369,6 +396,16 @@ class VKAdapter:
         if not result.handled:
             return False
         if result.state == "escalate":
+            # If the automatic calendar for accommodation is not configured yet, do not
+            # make the parent hit a dead end. Collect a short structured request instead;
+            # the manager will confirm dates manually.
+            if self.intake is not None and original_question and result.error_reason in {"booking_service_not_configured", "booking_not_enabled"}:
+                if classify_transaction(original_question) == "corpus_request":
+                    self.db.clear_booking_session(user_id=user.user_id)
+                    intake_result = await self.intake.handle_text(
+                        IntakeUser(user.user_id, user.peer_id, user.full_name, user.username), original_question
+                    )
+                    return await self._send_intake_result(user, intake_result)
             answer = BotAnswer(False, None, confidence=0.0, reason=result.error_reason or "booking_backend_unavailable")
             ticket_id = await self.operator.escalate(
                 platform="vk", user_id=user.user_id, chat_id=user.peer_id, username=user.username,
@@ -567,7 +604,8 @@ class VKAdapter:
         lines = [f"🧪 Диагностика v{VERSION}", f"VK group: {self.settings.vk_group_id}", f"Manager: {self.settings.vk_manager_user_id or 'не задан'}"]
         lines.append(f"Website KB: {'fresh' if getattr(self.kb, 'is_fresh', False) else 'stale/fallback'}")
         lines.append(f"Manager KB: {self.db.manual_knowledge_count()} active")
-        lines.append(f"Smart Handoff: {'ON' if self.intake is not None else 'OFF'} · active sessions: {self.db.intake_session_count()}")
+        lines.append(f"Smart Handoff: {'ON' if self.settings.smart_handoff_enabled else 'OFF'} · active sessions: {self.db.intake_session_count()}")
+        lines.append(f"Event requests: {'ON' if self.intake is not None else 'OFF'}")
         lines.append(f"Knowledge Loop: {'ON' if self.settings.knowledge_loop_enabled else 'OFF'}")
         lines.append(f"VK profile source: {'OK' if self._profile_pages else 'not loaded'}")
         if self.settings.vk_content_token:
@@ -950,10 +988,47 @@ class VKAdapter:
             )
             return
 
+        # Etiquette / acknowledgement messages are complete conversations, not unanswered
+        # support questions.  Handle them before Booking, Smart Handoff and the generic
+        # fallback so "спасибо" or "до свидания" never creates a manager ticket.
+        if not intent:
+            social_kind = classify_social_only(question_text)
+            if social_kind:
+                self.db.track(user_id=user.user_id, peer_id=user.peer_id, kind="smalltalk", name=social_kind)
+                await self.send_message(user.peer_id, social_reply(social_kind), keyboard=main_keyboard())
+                try:
+                    await self.mark_support_conversation(user.peer_id, False)
+                except Exception:
+                    pass
+                return
+
+        if not intent:
+            event_info = public_event_info(question_text)
+            if event_info:
+                self.db.track(user_id=user.user_id, peer_id=user.peer_id, kind="faq", name="event_public_info")
+                await self.send_message(user.peer_id, event_info, keyboard=main_keyboard())
+                return
+
+        # Stable public rental prices/conditions come from the official camp offer for this
+        # release. Answer them before Booking so a simple price question never starts a form
+        # or creates a manager ticket. Dynamic availability still goes through Booking.
+        if not intent:
+            rental_info = public_rental_info(question_text)
+            if rental_info:
+                self.db.track(user_id=user.user_id, peer_id=user.peer_id, kind="faq", name="rental_public_info")
+                await self.send_message(user.peer_id, rental_info, keyboard=main_keyboard())
+                return
+
         # If the Google booking backend is intentionally disabled or temporarily unavailable,
         # explicit booking requests must fail closed to a human instead of looking like a static
         # extra-services FAQ answer. Informational price/conditions questions still use the FAQ.
         if not intent and self.booking is None and is_booking_request(question_text):
+            if self.intake is not None and classify_transaction(question_text) == "corpus_request":
+                intake_result = await self.intake.handle_text(
+                    IntakeUser(user.user_id, user.peer_id, user.full_name, user.username), question_text
+                )
+                await self._send_intake_result(user, intake_result)
+                return
             # The parent explicitly switched from an unfinished Smart Handoff to booking. Even
             # though the booking backend is disabled/misconfigured, do not leave the old form
             # alive to consume their next reply.
@@ -1272,10 +1347,24 @@ class VKAdapter:
 
     async def _handle_update(self, update: dict[str, Any]) -> None:
         typ = str(update.get("type") or "")
-        if typ == "message_new":
-            await self._handle_message_new(update)
-        elif typ == "message_event":
-            await self._handle_message_event(update)
+        peer_id = self._update_peer_id(update)
+        typing_task: asyncio.Task[None] | None = None
+        if peer_id > 0 and typ in {"message_new", "message_event"}:
+            # Run the indicator independently so a temporary setActivity problem can never
+            # delay the actual answer.  The loop sends immediately, then refreshes itself.
+            typing_task = asyncio.create_task(self._typing_keepalive(peer_id))
+        try:
+            if typ == "message_new":
+                await self._handle_message_new(update)
+            elif typ == "message_event":
+                await self._handle_message_event(update)
+        finally:
+            if typing_task is not None:
+                typing_task.cancel()
+                try:
+                    await typing_task
+                except asyncio.CancelledError:
+                    pass
 
     # ---------------- secondary knowledge sources ----------------
     def _publish_external_pages(self) -> None:

@@ -37,9 +37,9 @@ def main_keyboard() -> str:
 
 def answer_keyboard(faq_id: str | None, feedback_id: int | None = None) -> str | None:
     rows: list[list[dict]] = []
-    if faq_id in {"summer-shifts-2026", "all-prices", "discounts"}:
+    if faq_id in {"summer-shifts-2027", "all-prices", "discounts"}:
         rows.append([_open_link("❄️ Зимняя путёвка", WINTER_SHIFT_FORM), _open_link("☀️ Летние путёвки", SUMMER_SHIFTS_FORM)])
-    elif faq_id in {"shift-1-2026", "shift-2-2026", "shift-3-2026", "shift-4-2026"}:
+    elif faq_id in {"shift-1-2027", "shift-2-2027", "shift-3-2027", "shift-4-2027"}:
         rows.append([_open_link("🎟 Купить путёвку", SUMMER_SHIFTS_FORM)])
     elif faq_id == "winter-2027":
         rows.append([_open_link("❄️ Купить зимнюю путёвку", WINTER_SHIFT_FORM)])
@@ -131,10 +131,10 @@ def newsletter_preview_keyboard(campaign_id: int) -> str:
 def shifts_carousel_template() -> str:
     elements = [
         {"title": "❄️ Зимняя смена", "description": "3–8 января 2027\n13 000 ₽", "buttons": [{"action": {"type": "open_link", "link": WINTER_SHIFT_FORM, "label": "Выбрать"}}]},
-        {"title": "☀️ 1 смена", "description": "18 июня – 2 июля\n34 000 ₽", "buttons": [{"action": {"type": "open_link", "link": SUMMER_SHIFTS_FORM, "label": "Выбрать"}}]},
-        {"title": "☀️ 2 смена", "description": "5–19 июля\n34 000 ₽", "buttons": [{"action": {"type": "open_link", "link": SUMMER_SHIFTS_FORM, "label": "Выбрать"}}]},
-        {"title": "☀️ 3 смена", "description": "22 июля – 5 августа\n34 000 ₽", "buttons": [{"action": {"type": "open_link", "link": SUMMER_SHIFTS_FORM, "label": "Выбрать"}}]},
-        {"title": "☀️ 4 смена", "description": "8–22 августа\n34 000 ₽", "buttons": [{"action": {"type": "open_link", "link": SUMMER_SHIFTS_FORM, "label": "Выбрать"}}]},
+        {"title": "☀️ 1 смена", "description": "18 июня – 2 июля\n40 000 ₽", "buttons": [{"action": {"type": "open_link", "link": SUMMER_SHIFTS_FORM, "label": "Выбрать"}}]},
+        {"title": "☀️ 2 смена", "description": "5–19 июля\n40 000 ₽", "buttons": [{"action": {"type": "open_link", "link": SUMMER_SHIFTS_FORM, "label": "Выбрать"}}]},
+        {"title": "☀️ 3 смена", "description": "22 июля – 5 августа\n40 000 ₽", "buttons": [{"action": {"type": "open_link", "link": SUMMER_SHIFTS_FORM, "label": "Выбрать"}}]},
+        {"title": "☀️ 4 смена", "description": "8–22 августа\n40 000 ₽", "buttons": [{"action": {"type": "open_link", "link": SUMMER_SHIFTS_FORM, "label": "Выбрать"}}]},
     ]
     return json.dumps({"type": "carousel", "elements": elements}, ensure_ascii=False, separators=(",", ":"))
 

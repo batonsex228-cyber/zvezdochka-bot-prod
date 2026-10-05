@@ -44,7 +44,7 @@ class V58DocumentKnowledgeTests(unittest.TestCase):
         return asyncio.run(self.responder.answer(text))
 
     def test_version(self):
-        self.assertEqual(VERSION, "6.0.1")
+        self.assertEqual(VERSION, "6.0.3")
 
     def test_age_is_7_to_16_inclusive(self):
         a = self.ask("До скольки лет принимаете детей?")

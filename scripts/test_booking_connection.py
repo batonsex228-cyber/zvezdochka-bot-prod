@@ -39,7 +39,10 @@ async def run() -> int:
         for key, label in (("gazebo", "Беседка"), ("corpus", "Корпус")):
             result = await backend.call("get_service", {"service_key": key})
             if result.get("found") and result.get("enabled"):
-                print(f"{label}: ENABLED — {result.get('service_name') or key}")
+                price = result.get("price_amount")
+                unit = result.get("price_unit")
+                price_text = f" · {int(price):,} ₽ {unit}".replace(",", " ") if price else ""
+                print(f"{label}: ENABLED — {result.get('service_name') or key}{price_text}")
             else:
                 print(f"{label}: disabled/not configured (safe)")
         return 0

@@ -386,7 +386,7 @@ class FirstContactBookingAdapterTests(unittest.IsolatedAsyncioTestCase):
 
 class BookingReleaseTests(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(VERSION, "6.0.1")
+        self.assertEqual(VERSION, "6.0.3")
 
     def test_booking_env_is_opt_in(self):
         text = (ROOT / ".env.example").read_text(encoding="utf-8")

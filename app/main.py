@@ -52,15 +52,15 @@ async def run() -> int:
                 booking_disabled_reason = f"{type(exc).__name__}: {exc}"
     intake = None
     intake_disabled_reason: str | None = None
-    if settings.smart_handoff_enabled:
-        if not settings.vk_manager_user_id:
-            intake_disabled_reason = "VK_MANAGER_USER_ID is required"
-        else:
-            try:
-                intake = SmartHandoffEngine(settings, db)
-            except Exception as exc:
-                # Smart Handoff must never prevent the already-working support bot from starting.
-                intake_disabled_reason = f"{type(exc).__name__}: {exc}"
+    # The short "own event" request flow is always available when a manager inbox is configured.
+    # The broader Smart Handoff scenarios still obey SMART_HANDOFF_ENABLED inside the engine.
+    if settings.vk_manager_user_id:
+        try:
+            intake = SmartHandoffEngine(settings, db)
+        except Exception as exc:
+            intake_disabled_reason = f"{type(exc).__name__}: {exc}"
+    elif settings.smart_handoff_enabled:
+        intake_disabled_reason = "VK_MANAGER_USER_ID is required"
 
     vk = VKAdapter(settings, core, db, operator, knowledge_base=kb, booking=booking, intake=intake)
     operator.set_vk_sender(vk.send_plain_from_operator)
@@ -80,12 +80,13 @@ async def run() -> int:
     else:
         print("      Booking: OFF (safe human handoff)")
 
-    if intake is not None:
+    if settings.smart_handoff_enabled and intake is not None:
         print("      Smart Handoff: ON")
     elif settings.smart_handoff_enabled:
         print(f"      Smart Handoff: OFF — safe standard handoff ({intake_disabled_reason or 'configuration error'})")
     else:
         print("      Smart Handoff: OFF")
+    print(f"      Event requests: {'ON' if intake is not None else 'OFF — manager inbox required'}")
     knowledge_loop_on = bool(settings.knowledge_loop_enabled and settings.vk_manager_user_id)
     print(f"      Knowledge Loop: {'ON' if knowledge_loop_on else 'OFF'}")
 

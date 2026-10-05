@@ -1,6 +1,26 @@
-# ДЗЛ «Звёздочка» — Support Bot v6.0 SMART HANDOFF · VK-FIRST
+# Current release: v6.0.3 — Rentals + Manager Sheet + Pricing
+
+- manager-friendly Russian booking journal in Google Sheets;
+- official rental prices and price totals in confirmation;
+- corpus/weekend-tour recognition with safe manual request fallback;
+- structured custom-event requests.
+
+See `CHANGELOG_v6_0_3.md` and `PATCH_v6_0_3_README.md`.
+
+# ДЗЛ «Звёздочка» — Support Bot v6.0.2 · VK-FIRST
 
 Предрелизная VK-first версия первой линии поддержки лагеря. Пользователь пишет в обычные **сообщения сообщества VK**; бот отвечает из проверенной базы, уточняет неоднозначные вопросы и передаёт всё, в чём не уверен, специалисту.
+
+
+## v6.0.2 — UX polish
+
+- Сообщения вроде `Спасибо`, `До свидания`, `Понятно`, `Окей`, emoji-реакций и коротких ping-фраз больше не создают тикет менеджеру.
+- Реальные вопросы с благодарностью (`Спасибо, а какие документы нужны?`) не перехватываются small-talk обработчиком.
+- Индикатор VK `печатает…` теперь поддерживается на всём времени обработки входящего сообщения/callback и обновляется для медленных Google Booking запросов.
+- Анкета бронирования разбита на 3 понятных этапа: дата/время → гости → контакты; тексты вопросов стали дружелюбнее.
+- Google Apps Script и структура Google Sheet относительно v6.0.1 не менялись.
+
+Подробно: `CHANGELOG_v6_0_2.md`, `PATCH_v6_0_2_README.md`.
 
 ## v6.0 — Smart Handoff + Knowledge Loop
 
@@ -124,7 +144,7 @@ python scripts/self_test.py
 Релизная сборка должна завершаться строкой:
 
 ```text
-ALL OFFLINE TESTS PASSED — 301 TESTS
+ALL OFFLINE TESTS PASSED — <актуальное число тестов>
 ```
 
 Это офлайн/интеграционная проверка кода. Реальные права токена и Long Poll отдельно проверяются `python scripts/test_vk_connection.py` уже в Вашем Codespace.
@@ -159,3 +179,8 @@ ALL OFFLINE TESTS PASSED — 301 TESTS
 ## v6.0.1 — Booking transport hotfix
 
 Production hotfix for intermittent Google Apps Script `ContentService` one-time redirect failures (`script.googleusercontent.com` 404). The bot now follows the redirect explicitly as GET, retries from the original `/exec` endpoint, and the Apps Script bridge de-duplicates mutating retries. Existing Google Sheets and SQLite data are preserved.
+
+
+## v6.0.2 release
+
+Current bot release: **6.0.2**.

@@ -7,11 +7,11 @@ from .responder import BotAnswer, StrictResponder
 
 # Stable product intents. Explicit buttons and deterministic router output land here.
 INTENT_FAQ: dict[str, str] = {
-    "shifts_prices": "summer-shifts-2026",
-    "shift_1": "shift-1-2026",
-    "shift_2": "shift-2-2026",
-    "shift_3": "shift-3-2026",
-    "shift_4": "shift-4-2026",
+    "shifts_prices": "summer-shifts-2027",
+    "shift_1": "shift-1-2027",
+    "shift_2": "shift-2-2027",
+    "shift_3": "shift-3-2027",
+    "shift_4": "shift-4-2027",
     "winter": "winter-2027",
     "food": "food-frequency",
     "bring": "bring-all",
@@ -51,18 +51,18 @@ MENU_LABEL_INTENTS: dict[str, str] = {
 # on a crawler snapshot. Current availability is excluded because it changes quickly.
 PINNED_UI_ANSWERS: dict[str, dict[str, str]] = {
     "shifts_prices": {
-        "faq_id": "summer-shifts-2026",
+        "faq_id": "summer-shifts-2027",
         "source": "https://zvezdaglazov.ru/pages/trip.html",
         "text": (
             "📅 <b>Смены и цены</b>\n\n"
             "❄️ <b>Зимняя смена 2027</b>\n"
             "«Тайны Северного сияния»\n"
             "3–8 января 2027 года — <b>13 000 ₽</b>\n\n"
-            "☀️ <b>Летние смены 2026</b>\n"
-            "1 смена: 18 июня – 2 июля — <b>34 000 ₽</b>\n"
-            "2 смена: 5–19 июля — <b>34 000 ₽</b>\n"
-            "3 смена: 22 июля – 5 августа — <b>34 000 ₽</b>\n"
-            "4 смена: 8–22 августа — <b>34 000 ₽</b>\n\n"
+            "☀️ <b>Летние смены 2027</b>\n"
+            "1 смена: 18 июня – 2 июля — <b>40 000 ₽</b>\n"
+            "2 смена: 5–19 июля — <b>40 000 ₽</b>\n"
+            "3 смена: 22 июля – 5 августа — <b>40 000 ₽</b>\n"
+            "4 смена: 8–22 августа — <b>40 000 ₽</b>\n\n"
             "Количество свободных мест меняется, поэтому наличие путёвок лучше уточнять отдельно."
         ),
     }

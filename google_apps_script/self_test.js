@@ -25,7 +25,13 @@ class Range {
     for (let r = 0; r < this.numRows; r++) for (let c = 0; c < this.numCols; c++) this.sheet.set(this.row + r, this.col + c, values[r][c]);
     return this;
   }
+  setValue(value) { this.sheet.set(this.row, this.col, value); return this; }
   setNumberFormat() { return this; }
+  setFontWeight() { return this; }
+  clearContent() {
+    for (let r = 0; r < this.numRows; r++) for (let c = 0; c < this.numCols; c++) this.sheet.set(this.row + r, this.col + c, '');
+    return this;
+  }
 }
 
 class Sheet {
@@ -36,6 +42,8 @@ class Sheet {
     return last;
   }
   getMaxRows() { return this.maxRows; }
+  getMaxColumns() { return Math.max(26, ...this.data.map(r => (r || []).length)); }
+  insertColumnsAfter() { return this; }
   getRange(row, col, numRows = 1, numCols = 1) { return new Range(this, row, col, numRows, numCols); }
   getDataRange() {
     const rows = Math.max(this.getLastRow(), 1);
@@ -44,6 +52,8 @@ class Sheet {
   }
   appendRow(row) { this.data.push([...row]); }
   setFrozenRows() { return this; }
+  autoResizeColumns() { return this; }
+  hideColumns() { return this; }
   get(row, col) { return (this.data[row - 1] || [])[col - 1] ?? ''; }
   set(row, col, value) {
     while (this.data.length < row) this.data.push([]);
@@ -131,6 +141,7 @@ services.set(2, 11, 50);
 service = post('get_service', {service_key: 'gazebo'});
 assert(service.ok && service.result.enabled, 'configured gazebo should be enabled');
 assert(service.result.open_time === '10:00' && service.result.close_time === '22:00', 'opening hours normalization failed');
+assert(service.result.price_amount === 3300 && service.result.price_unit === 'за 3 часа', 'gazebo price migration failed');
 
 const health = post('health');
 assert(health.ok && health.result.healthy, 'health failed');
@@ -186,11 +197,19 @@ const hold3 = post('create_hold', {
 assert(hold3.result.available && hold3.result.booking_id, 'second valid hold failed');
 const submit = post('submit_booking', {
   booking_id: hold3.result.booking_id, full_name: 'Иванов Иван', phone: '+79123456789', guest_count: 15,
+  price_amount: 3300, price_text: '💳 К ОПЛАТЕ: 3 300 ₽',
 });
 assert(submit.result.submitted, 'submit failed');
 
 const decision = post('manager_decision', {booking_id: hold3.result.booking_id, decision: 'confirmed', manager_id: 9});
 assert(decision.result.updated && decision.result.status === 'confirmed', 'manager confirmation failed');
+
+const managerSheet = spreadsheet.getSheetByName('Бронирования — менеджер');
+assert(managerSheet, 'manager-friendly booking sheet was not created');
+const managerHeaders = managerSheet.getRange(1,1,1,20).getValues()[0];
+assert(managerHeaders[0] === 'Статус' && managerHeaders[5] === 'ФИО' && managerHeaders[8] === 'Стоимость', 'manager sheet headers are not Russian/user-friendly');
+const managerRows = managerSheet.getDataRange().getValues();
+assert(managerRows.some(r => r[0] === 'Подтверждено' && String(r[8]).includes('3 300')), 'manager sheet did not sync confirmed booking/price');
 
 // Multiple gazebo resources must behave as a shared pool: if gazebo-1 is occupied,
 // the same service/time should be placed into another free resource.
@@ -206,5 +225,94 @@ const pooledHold = post('create_hold', {
 });
 assert(pooledHold.result.available, 'pooled gazebo should find another free resource');
 assert(pooledHold.result.resource_key === 'gazebo-2', 'pooled gazebo did not choose gazebo-2 when gazebo-1 was occupied');
+
+// Running setup on an already-populated production sheet is the upgrade path for v5.9.2.
+// It must add the manager view/pricing columns without deleting existing bookings.
+const techBookings = spreadsheet.getSheetByName('Бронирования');
+const rowsBeforeUpgradeRerun = techBookings.getLastRow();
+context.setupSpreadsheet();
+assert(techBookings.getLastRow() === rowsBeforeUpgradeRerun, 'setup rerun deleted or added technical booking rows');
+const preserved = post('get_booking', {booking_id: hold3.result.booking_id});
+assert(preserved.result.found && preserved.result.booking.status === 'confirmed', 'setup rerun damaged an existing confirmed booking');
+const versionSetting = spreadsheet.getSheetByName('Настройки').getDataRange().getValues().find(r => r[0] === 'version');
+assert(versionSetting && versionSetting[1] === '5.9.2', 'schema version was not upgraded in Settings');
+
+
+// Exact v5.9.1 -> v5.9.2 migration smoke: production already has 19-column
+// bookings and 13-column services. setupSpreadsheet() must extend those sheets
+// in place without deleting/reordering existing rows.
+spreadsheet.sheets = {};
+spreadsheet.timeZone = 'UTC';
+delete properties.SPREADSHEET_ID;
+
+const legacyBookingHeaders = [
+  'booking_id','status','service_key','service_name','resource_key','resource_name',
+  'start_at','end_at','full_name','phone','guest_count','vk_user_id','vk_peer_id',
+  'source','comment','created_at','updated_at','expires_at','manager_id'
+];
+const legacyServiceHeaders = [
+  'enabled','service_key','service_name','resource_key','resource_name','mode',
+  'open_time','close_time','min_duration_minutes','max_duration_minutes','max_guests',
+  'manager_approval','notes'
+];
+const legacySettingsHeaders = ['key','value','comment'];
+const legacyBlockHeaders = ['enabled','service_key','resource_key','start_at','end_at','reason'];
+
+const legacyBookings = spreadsheet.insertSheet('Бронирования');
+legacyBookings.appendRow(legacyBookingHeaders);
+legacyBookings.appendRow([
+  'ZV-LEGACY','confirmed','gazebo','Беседка','gazebo-1','Беседка №1',
+  new Date('2030-10-18T10:00:00Z'),new Date('2030-10-18T13:00:00Z'),
+  'Назаров Алексей Сергеевич','+79828387995',10,'544188872','544188872','VK bot','',
+  new Date('2026-10-02T16:00:00Z'),new Date('2026-10-02T16:05:00Z'),'','544188872'
+]);
+const legacyServices = spreadsheet.insertSheet('Объекты и услуги');
+legacyServices.appendRow(legacyServiceHeaders);
+for (let i = 1; i <= 5; i++) {
+  legacyServices.appendRow([true,'gazebo','Беседка','gazebo-' + i,'Беседка №' + i,'hourly','08:00','23:00',180,900,20,true,'legacy']);
+}
+legacyServices.appendRow([false,'corpus','Аренда корпуса','corpus-1','Корпус','date_range','','',0,0,0,true,'legacy']);
+const legacyBlocks = spreadsheet.insertSheet('Блокировки');
+legacyBlocks.appendRow(legacyBlockHeaders);
+const legacySettings = spreadsheet.insertSheet('Настройки');
+legacySettings.appendRow(legacySettingsHeaders);
+legacySettings.appendRow(['timezone','Europe/Samara','Часовой пояс лагеря']);
+legacySettings.appendRow(['hold_minutes','15','hold']);
+legacySettings.appendRow(['version','5.9.1','old schema']);
+
+context.setupSpreadsheet();
+assert(legacyBookings.getLastRow() === 2, 'legacy migration changed booking row count');
+const migratedBookingHeaders = legacyBookings.getRange(1,1,1,21).getValues()[0];
+assert(migratedBookingHeaders[0] === 'booking_id' && migratedBookingHeaders[19] === 'price_amount' && migratedBookingHeaders[20] === 'price_text', 'legacy booking headers were not extended safely');
+const legacyPreserved = post('get_booking', {booking_id:'ZV-LEGACY'});
+assert(legacyPreserved.result.found && legacyPreserved.result.booking.status === 'confirmed', 'legacy confirmed booking was not preserved');
+assert(legacyServices.getLastRow() === 7, 'legacy service rows were deleted/added');
+const migratedGazebo = post('get_service', {service_key:'gazebo'});
+assert(migratedGazebo.result.enabled && migratedGazebo.result.price_amount === 3300, 'legacy gazebo rows did not receive price fields');
+const migratedCorpusRow = legacyServices.getRange(7,1,1,18).getValues()[0];
+assert(migratedCorpusRow[0] === false && migratedCorpusRow[2] === 'Тур выходного дня' && migratedCorpusRow[14] === 1450, 'legacy corpus row migration failed');
+const migratedManager = spreadsheet.getSheetByName('Бронирования — менеджер');
+assert(migratedManager && migratedManager.getLastRow() === 2, 'manager sheet was not built from legacy bookings');
+const migratedManagerRow = migratedManager.getRange(2,1,1,20).getValues()[0];
+assert(migratedManagerRow[0] === 'Подтверждено' && migratedManagerRow[5] === 'Назаров Алексей Сергеевич', 'legacy booking was not represented correctly in manager sheet');
+
+// Exact current production pool smoke: five independently bookable gazebos must occupy
+// gazebo-1..gazebo-5 for the same interval; a sixth simultaneous hold must fail closed.
+const poolResources = [];
+for (let i = 1; i <= 5; i++) {
+  const hold = post('create_hold', {
+    service_key:'gazebo', start_at:'2035-10-18T10:00:00Z', end_at:'2035-10-18T13:00:00Z',
+    guest_count:10, vk_user_id:700 + i, vk_peer_id:700 + i, ttl_minutes:15, request_id:'REQ-FIVE-' + i
+  });
+  assert(hold.ok && hold.result.available, 'one of five production gazebos was not bookable');
+  poolResources.push(hold.result.resource_key);
+}
+assert(new Set(poolResources).size === 5, 'five simultaneous holds did not use five distinct gazebos');
+assert(poolResources.includes('gazebo-1') && poolResources.includes('gazebo-5'), 'production gazebo pool keys are incomplete');
+const sixthPoolHold = post('create_hold', {
+  service_key:'gazebo', start_at:'2035-10-18T10:00:00Z', end_at:'2035-10-18T13:00:00Z',
+  guest_count:10, vk_user_id:799, vk_peer_id:799, ttl_minutes:15, request_id:'REQ-FIVE-6'
+});
+assert(!sixthPoolHold.result.available && sixthPoolHold.result.reason === 'occupied', 'sixth simultaneous gazebo hold must be unavailable');
 
 console.log('GOOGLE APPS SCRIPT OFFLINE SELF-TEST: PASS');

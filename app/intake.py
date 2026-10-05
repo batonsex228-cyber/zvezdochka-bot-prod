@@ -61,7 +61,10 @@ SHIFT_WORDS = {
 
 
 def _norm(text: str) -> str:
-    return " ".join((text or "").lower().replace("ё", "е").split())
+    n = " ".join((text or "").lower().replace("ё", "е").split())
+    # Same narrow real-world typo tolerance as Booking: parents often type
+    # «октбря» / «октебря» in a hurry.
+    return re.sub(r"\bокт(?:б|еб)ря\b", "октября", n)
 
 
 def _normalize_phone(text: str) -> str | None:
@@ -81,6 +84,44 @@ def _normalize_phone(text: str) -> str | None:
 def _payment_secret(text: str) -> bool:
     raw = text or ""
     return bool(CARD_RE.search(raw) or SMS_CODE_RE.search(raw))
+
+
+def _extract_guest_count(text: str) -> int | None:
+    n = _norm(text)
+    patterns = [
+        r"\b(\d{1,3})\s*(?:человек|чел\.?|гостей|гостя|участник(?:ов|а)?|детей|взрослых)\b",
+        r"\bнас\s+(?:будет\s+)?(?:примерно\s+|около\s+)?(\d{1,3})\b",
+        r"\bбудет\s+(?:примерно\s+|около\s+)?(\d{1,3})\s*(?:человек|чел\.?|гостей|участников)?\b",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, n)
+        if not m:
+            continue
+        value = int(m.group(1))
+        if 1 <= value <= 999:
+            return value
+    return None
+
+
+def _has_stay_date_hint(text: str) -> bool:
+    n = _norm(text)
+    if any(x in n for x in ["сегодня", "завтра", "послезавтра", "выходн", "даты пока не знаю", "дату пока не знаю", "даты не знаю", "дата не знаю"]):
+        return True
+    if any(m in n for m in ["январ", "феврал", "март", "апрел", "май", "мая", "июн", "июл", "август", "сентябр", "октябр", "ноябр", "декабр"]):
+        return True
+    return bool(re.search(r"\b\d{1,2}(?:[./-]\d{1,2})(?:[./-]\d{2,4})?\b", n))
+
+
+def _corpus_quote_from_details(text: str) -> tuple[int | None, str]:
+    guests = _extract_guest_count(text)
+    if not guests:
+        return None, ""
+    per_person = 1450
+    total = per_person * guests
+    return total, (
+        f"💳 ОРИЕНТИР ПО ТАРИФУ: {total:,} ₽ ({per_person:,} ₽ × {guests} чел.). "
+        "Это расчёт по опубликованному тарифу «Тура выходного дня»; итог для выбранных дат подтвердит менеджер."
+    ).replace(",", " ")
 
 
 def _parse_name(text: str) -> str | None:
@@ -275,6 +316,24 @@ SCENARIOS: dict[str, Scenario] = {
             Step("phone", "Телефон", "Оставьте номер телефона для связи в формате +7 …", "phone"),
         ),
     ),
+    "event_request": Scenario(
+        "event_request", "Своё мероприятие в лагере",
+        (
+            Step("event_details", "Что хотите организовать", "🎉 Расскажите, пожалуйста, в нескольких словах, что хотите организовать, ориентировочную дату и примерно сколько будет человек."),
+            Step("full_name", "ФИО", "Отлично 😊 Напишите, пожалуйста, ФИО человека, с которым менеджер сможет обсудить детали.", "name"),
+            Step("phone", "Телефон", "И номер телефона для связи, пожалуйста. Например: +7 912 345-67-89", "phone"),
+        ),
+        intro="Лагерь проводит праздники, корпоративы, выпускные, деловые и другие мероприятия. Для нестандартного формата я быстро соберу заявку специалисту.",
+    ),
+    "corpus_request": Scenario(
+        "corpus_request", "Проживание / тур выходного дня",
+        (
+            Step("stay_details", "Даты и гости", "🏡 Напишите, пожалуйста, желаемые даты и примерно сколько будет человек. Например: «18–19 октября, 12 человек».", "corpus_details"),
+            Step("full_name", "ФИО", "Хорошо 😊 Напишите ФИО человека, на которого оформляем запрос.", "name"),
+            Step("phone", "Телефон", "И номер телефона для связи, пожалуйста. Например: +7 912 345-67-89", "phone"),
+        ),
+        intro="Формат «Тур выходного дня» стоит 1 450 ₽ с человека; проживание, ужин и завтрак включены. Я соберу данные, а менеджер подтвердит свободные даты и итоговую заявку.",
+    ),
 }
 
 
@@ -345,12 +404,109 @@ def build_urgent_submission(text: str) -> dict[str, Any]:
     }
 
 
+def public_event_info(text: str) -> str | None:
+    n = _norm(text)
+    # An explicitly named gazebo is a fixed-price rental even when the parent plans
+    # a birthday/corporate there; let the rental-price handler answer that first.
+    if any(x in n for x in ["бесед", "газеб"]):
+        return None
+    event_markers = [
+        "мероприят", "корпоратив", "выпускн", "день рождения", "свадьб", "юбилей",
+        "банкет", "конференц", "соревнован", "турнир", "праздник",
+        "аренда площадк", "арендовать площадк", "площадка для меропр",
+        "аренда зала", "арендовать зал", "снять зал", "банкетный зал", "конференц-зал", "конференц зал",
+    ]
+    info_markers = [
+        "сколько стоит", "сколько будет стоить", "сколько будет сто", "сколько нужно заплатить",
+        "сколько заплатить", "во сколько обойд", "по чем", "какая цена", "стоимость", "цена",
+        "что есть", "какой зал", "вместимость", "у вас есть", "есть ли", "хочу узнать", "хотим узнать",
+        "расскажите", "можно ли", "можно провести", "можно организовать", "проводите",
+        "какие мероприятия", "какие форматы",
+    ]
+    if not any(x in n for x in event_markers) or not any(x in n for x in info_markers):
+        return None
+
+    # A parent asking what competitions/activities *take place for children* is asking
+    # about the camp programme, not about renting the venue.  Require a hosting/service
+    # clue before intercepting those broad words as an event-service question.
+    broad_program_markers = any(x in n for x in ["соревнован", "турнир", "мероприят"])
+    hosting_clue = any(x in n for x in [
+        "можно провести", "можно организовать", "провести", "организовать", "устроить",
+        "аренд", "заказать", "оставить заявку", "нужен зал", "нужна площадка",
+        "сколько стоит", "какая цена", "стоимость", "цена",
+    ])
+    specific_commercial_format = any(x in n for x in [
+        "корпоратив", "выпускн", "день рождения", "свадьб", "юбилей", "банкет", "конференц",
+        "банкетный зал", "конференц-зал", "конференц зал",
+    ])
+    if broad_program_markers and not (hosting_clue or specific_commercial_format):
+        return None
+
+    return (
+        "Для мероприятий стоимость рассчитывается индивидуально — фиксированная цена на сайте не указана. "
+        "Есть банкетный зал до 120 человек и конференц-зал до 200 человек; можно согласовать питание, организацию, ведущего, музыку и дискотеку.\n\n"
+        "Если хотите, напишите, что планируете провести — я соберу короткую заявку менеджеру."
+    )
+
+
 def classify_transaction(text: str) -> str | None:
     n = _norm(text)
     if not n:
         return None
     if _urgent(n):
         return "urgent_safety"
+
+    # Custom events are an always-available structured service request. Price/conditions
+    # questions alone remain informational; actionable wording starts the short form.
+    event_markers = [
+        "мероприят", "корпоратив", "выпускн", "день рождения", "свадьб", "юбилей",
+        "банкет", "конференц", "соревнован", "турнир", "праздник", "свой сценарий",
+        "аренда площадк", "арендовать площадк", "площадка для меропр", "нужна площадка",
+        "аренда зала", "арендовать зал", "снять зал", "нужен зал",
+    ]
+    event_action = any(x in n for x in [
+        "организовать", "провести", "устроить", "заказать", "оставить заявку", "планируем",
+        "нужна площадка", "нужен зал", "снять зал", "хочу мероприят", "хотим мероприят",
+        "хочу корпоратив", "хотим корпоратив", "хочу банкет", "хотим банкет",
+        "хочу праздник", "хотим праздник", "хочу свадьб", "хотим свадьб",
+        "хочу выпускн", "хотим выпускн",
+    ])
+    if re.search(r"\bнуж(?:ен|на)\b.{0,30}\b(?:зал|площадк)", n):
+        event_action = True
+    # "Арендовать банкетный зал/площадку" is an event request, while
+    # "арендовать беседку/корпус для корпоратива" should stay in the explicit
+    # gazebo/accommodation booking flow rather than being hijacked by this router.
+    booking_object_mentioned = any(x in n for x in [
+        "бесед", "газеб", "корпус", "домик", "тур выходного дня", "тур на выходные",
+        "проживан", "ночевк", "ночёвк",
+    ])
+    if "аренд" in n and not booking_object_mentioned:
+        event_action = True
+    event_info = any(x in n for x in [
+        "сколько стоит", "сколько будет стоить", "сколько будет сто", "сколько нужно заплатить",
+        "сколько заплатить", "во сколько обойд", "по чем", "какая цена", "стоимость", "цена", "хочу узнать",
+        "хотим узнать", "расскажите", "подскажите про", "у вас есть", "есть ли", "можно провести", "проводите",
+    ])
+    if any(x in n for x in event_markers) and event_action and not event_info:
+        return "event_request"
+
+    corpus_markers = ["корпус", "тур выходного дня", "тур на выходные", "проживание", "ночевк", "ночёвк"]
+    corpus_action = any(x in n for x in [
+        "снять", "заброни", "бронь", "аренд", "оформить",
+        "хочу корпус", "хотим корпус", "нужен корпус",
+        "хочу прожив", "хотим прожив", "нужно прожив",
+        "хочу ночев", "хотим ночев", "нужна ночев",
+        "хочу тур выходного", "хотим тур выходного", "хочу тур на выходные", "хотим тур на выходные",
+    ])
+    if any(x in n for x in ["хочу", "хотим", "нужен", "нужно"]) and "на выходн" in n:
+        corpus_action = True
+    corpus_info = any(x in n for x in [
+        "сколько стоит", "сколько будет стоить", "сколько будет сто", "сколько нужно заплатить",
+        "сколько заплатить", "во сколько обойд", "по чем", "какая цена", "стоимость", "что входит", "есть ли аренда",
+        "хочу узнать", "хотим узнать", "расскажите", "подскажите про",
+    ])
+    if any(x in n for x in corpus_markers) and corpus_action and not corpus_info:
+        return "corpus_request"
 
     # Dynamic capacity is never safe to answer from a cached FAQ. Accept common Russian word order
     # variants: «есть места», «места есть», «остались путёвки», «путёвка ещё есть».
@@ -522,7 +678,12 @@ class SmartIntakeEngine:
             return True
         row = self.db.get_intake_session(user_id=user_id)
         if not row:
-            return classify_transaction(text) is not None
+            key = classify_transaction(text)
+            if key in {"event_request", "corpus_request"}:
+                return True
+            if not self.settings.smart_handoff_enabled:
+                return False
+            return key is not None
         if _cancel(text) or _status(text) or _yes(text):
             return True
         status = str(row.get("status") or "")
@@ -556,6 +717,15 @@ class SmartIntakeEngine:
         if step.kind == "name":
             value = _parse_name(text)
             return (True, value, None) if value else (False, None, "Напишите, пожалуйста, имя и фамилию ребёнка/плательщика, например: «Иванов Иван».")
+        if step.kind == "corpus_details":
+            value = _clean_free_text(text)
+            if value is None:
+                return False, None, "Напишите, пожалуйста, даты и количество гостей одним сообщением."
+            if not _extract_guest_count(value):
+                return False, None, "Не вижу количество гостей. Добавьте, пожалуйста, примерно сколько будет человек — например: «18–19 октября, 12 человек»."
+            if not _has_stay_date_hint(value):
+                return False, None, "Не вижу желаемых дат. Добавьте даты поездки или напишите «даты пока не знаю»."
+            return True, value, None
         value = _clean_free_text(text)
         if value is None:
             return False, None, "Напишите, пожалуйста, коротко одним сообщением."
@@ -607,6 +777,18 @@ class SmartIntakeEngine:
                 fields["preference"] = "Одна комната"
             elif "отряд" in n and "комнат" in n:
                 fields["preference"] = "Один отряд и одна комната"
+        if scenario.key == "event_request":
+            # Reuse the first message only when it already carries useful planning details.
+            # A generic «хочу провести мероприятие» must still receive the details prompt.
+            has_date = bool(re.search(r"\b\d{1,2}(?:[./-]\d{1,2})?\b", n) or any(m in n for m in ["январ", "феврал", "март", "апрел", "май", "мая", "июн", "июл", "август", "сентябр", "октябр", "ноябр", "декабр"]))
+            has_count = bool(re.search(r"\b\d{1,3}\s*(?:человек|чел\.?|гостей|участник|детей|взрослых)\b", n))
+            if has_date and has_count and len(text.strip()) >= 20:
+                fields["event_details"] = text.strip()[:350]
+        if scenario.key == "corpus_request":
+            has_date = bool(re.search(r"\b\d{1,2}(?:[./-]\d{1,2})?\b", n) or any(m in n for m in ["январ", "феврал", "март", "апрел", "май", "мая", "июн", "июл", "август", "сентябр", "октябр", "ноябр", "декабр"]))
+            has_count = bool(re.search(r"\b\d{1,3}\s*(?:человек|чел\.?|гостей|детей|взрослых)\b", n))
+            if has_date and has_count:
+                fields["stay_details"] = text.strip()[:350]
         return payload
 
     @staticmethod
@@ -622,6 +804,10 @@ class SmartIntakeEngine:
         for step in scenario.steps:
             value = str(fields.get(step.field) or "—")
             lines.append(f"{step.label}: {value}")
+        if scenario.key == "corpus_request":
+            _amount, price_text = _corpus_quote_from_details(str(fields.get("stay_details") or ""))
+            if price_text:
+                lines.append("\n" + price_text)
         lines.append("\nВсё верно? После подтверждения я передам заявку специалисту.")
         return "\n".join(lines)
 
@@ -632,6 +818,12 @@ class SmartIntakeEngine:
             {"key": step.field, "label": step.label, "value": str(fields.get(step.field) or "—")}
             for step in scenario.steps
         ]
+        if scenario.key == "corpus_request":
+            amount, price_text = _corpus_quote_from_details(str(fields.get("stay_details") or ""))
+            if price_text:
+                fields["quoted_price_amount"] = amount
+                fields["quoted_price_text"] = price_text
+                display_fields.append({"key": "quoted_price_text", "label": "Стоимость", "value": price_text.replace("💳 ", "")})
         return {
             "intake_type": scenario.key,
             "title": scenario.title,
@@ -680,6 +872,8 @@ class SmartIntakeEngine:
                     state="security_reject",
                 )
             if key is None:
+                return IntakeResult(False)
+            if key not in {"event_request", "corpus_request"} and not self.settings.smart_handoff_enabled:
                 return IntakeResult(False)
             scenario = self._scenario(key)
             payload = self._initial_payload(scenario, text)

@@ -1,5 +1,5 @@
 /**
- * ZVEZDOCHKA BOOKING BRIDGE v5.9.1
+ * ZVEZDOCHKA BOOKING BRIDGE v5.9.2
  * Bound to one Google Sheet. Deploy as Web App (execute as owner).
  * The bot authenticates with API_SECRET stored in Script Properties.
  */
@@ -9,20 +9,26 @@ const SHEETS = {
   SERVICES: 'Объекты и услуги',
   BLOCKS: 'Блокировки',
   SETTINGS: 'Настройки',
+  MANAGER: 'Бронирования — менеджер',
 };
 
 const BOOKING_HEADERS = [
   'booking_id','status','service_key','service_name','resource_key','resource_name',
   'start_at','end_at','full_name','phone','guest_count','vk_user_id','vk_peer_id',
-  'source','comment','created_at','updated_at','expires_at','manager_id'
+  'source','comment','created_at','updated_at','expires_at','manager_id','price_amount','price_text'
 ];
 const SERVICE_HEADERS = [
   'enabled','service_key','service_name','resource_key','resource_name','mode',
   'open_time','close_time','min_duration_minutes','max_duration_minutes','max_guests',
-  'manager_approval','notes'
+  'manager_approval','notes','price_mode','price_amount','price_unit','price_duration_minutes','price_includes'
 ];
 const BLOCK_HEADERS = ['enabled','service_key','resource_key','start_at','end_at','reason'];
 const SETTINGS_HEADERS = ['key','value','comment'];
+const MANAGER_HEADERS = [
+  'Статус','Услуга','Объект','Начало','Окончание','ФИО','Телефон','Гостей','Стоимость',
+  'Создано','Обновлено','Комментарий','booking_id','service_key','resource_key','vk_user_id',
+  'vk_peer_id','source','expires_at','manager_id'
+];
 
 function setupSpreadsheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -41,21 +47,27 @@ function setupSpreadsheet() {
   const services = ensureSheet_(ss, SHEETS.SERVICES, SERVICE_HEADERS);
   const blocks = ensureSheet_(ss, SHEETS.BLOCKS, BLOCK_HEADERS);
   const settings = ensureSheet_(ss, SHEETS.SETTINGS, SETTINGS_HEADERS);
+  const manager = ensureSheet_(ss, SHEETS.MANAGER, MANAGER_HEADERS);
 
   if (services.getLastRow() === 1) {
     services.getRange(2,1,2,SERVICE_HEADERS.length).setValues([
-      [false,'gazebo','Беседка','gazebo-1','Беседка','hourly','','',0,0,0,true,'Заполните реальные часы, длительность и вместимость, затем включите строку.'],
-      [false,'corpus','Аренда корпуса','corpus-1','Корпус','date_range','','',0,0,0,true,'Заполните реальные правила аренды корпуса, затем включите строку.'],
+      [false,'gazebo','Беседка','gazebo-1','Беседка','hourly','','',0,0,0,true,'Заполните реальные часы, длительность и вместимость, затем включите строку.','fixed_duration',3300,'за 3 часа',180,'Мангал, уголь, розжиг и решётка'],
+      [false,'corpus','Тур выходного дня','corpus-1','Корпус','date_range','','',0,0,0,true,'Заполните реальные правила и вместимость корпуса, затем включите строку.','per_person',1450,'с человека',0,'Проживание, ужин и завтрак'],
     ]);
   }
   if (settings.getLastRow() === 1) {
     settings.getRange(2,1,3,3).setValues([
       ['timezone','Europe/Samara','Часовой пояс лагеря'],
       ['hold_minutes','15','Сколько минут держать временную бронь'],
-      ['version','5.9.1','Версия схемы'],
+      ['version','5.9.2','Версия схемы'],
     ]);
+  } else {
+    const settingRows = rowsFromSheet_(settings);
+    const versionRow = settingRows.find(r => String(r.key || '') === 'version');
+    if (versionRow) settings.getRange(versionRow._row,2).setValue('5.9.2');
   }
-  services.setFrozenRows(1); blocks.setFrozenRows(1); settings.setFrozenRows(1);
+  backfillOfficialRentalPricing_(services);
+  services.setFrozenRows(1); blocks.setFrozenRows(1); settings.setFrozenRows(1); manager.setFrozenRows(1);
   const bookings = ss.getSheetByName(SHEETS.BOOKINGS);
   bookings.setFrozenRows(1);
   // Keep the manager-facing journal readable. Apps Script writes real Date values,
@@ -63,12 +75,14 @@ function setupSpreadsheet() {
   [7,8,16,17,18].forEach(col => bookings.getRange(2,col,Math.max(bookings.getMaxRows()-1,1),1).setNumberFormat('dd.MM.yyyy HH:mm'));
   [4,5].forEach(col => blocks.getRange(2,col,Math.max(blocks.getMaxRows()-1,1),1).setNumberFormat('dd.MM.yyyy HH:mm'));
   [7,8].forEach(col => services.getRange(2,col,Math.max(services.getMaxRows()-1,1),1).setNumberFormat('HH:mm'));
+  syncManagerSheet_();
+  formatManagerSheet_(manager);
   console.log('SPREADSHEET_ID=' + ss.getId());
   console.log('Готово. Теперь Deploy -> New deployment -> Web app.');
 }
 
 function doGet() {
-  return json_({ok:true, result:{service:'zvezdochka-booking', version:'5.9.1'}});
+  return json_({ok:true, result:{service:'zvezdochka-booking', version:'5.9.2'}});
 }
 
 function doPost(e) {
@@ -81,7 +95,7 @@ function doPost(e) {
     if (!payload.request_id && body.request_id) payload.request_id = String(body.request_id);
     cleanupExpiredHolds_();
     let result;
-    if (action === 'health') result = {healthy:true, version:'5.9.1'};
+    if (action === 'health') result = {healthy:true, version:'5.9.2'};
     else if (action === 'get_service') result = getService_(payload);
     else if (action === 'check_availability') result = checkAvailability_(payload);
     else if (action === 'create_hold') result = createHold_(payload);
@@ -114,6 +128,80 @@ function ensureSheet_(ss, name, headers) {
   const current = sh.getRange(1,1,1,headers.length).getValues()[0];
   if (current.join('|') !== headers.join('|')) sh.getRange(1,1,1,headers.length).setValues([headers]);
   return sh;
+}
+
+function rowsFromSheet_(sh) {
+  if (!sh || sh.getLastRow() < 2) return [];
+  const values = sh.getDataRange().getValues();
+  const headers = values.shift().map(String);
+  return values.map((row, idx) => {
+    const out = {_row: idx + 2};
+    headers.forEach((h,i) => out[h] = row[i]);
+    return out;
+  });
+}
+
+function backfillOfficialRentalPricing_(services) {
+  const rows = rowsFromSheet_(services);
+  rows.forEach(r => {
+    const key = String(r.service_key || '');
+    const patch = {};
+    if (key === 'gazebo') {
+      if (!String(r.price_mode || '').trim()) patch.price_mode = 'fixed_duration';
+      if (!Number(r.price_amount || 0)) patch.price_amount = 3300;
+      if (!String(r.price_unit || '').trim()) patch.price_unit = 'за 3 часа';
+      if (!Number(r.price_duration_minutes || 0)) patch.price_duration_minutes = 180;
+      if (!String(r.price_includes || '').trim()) patch.price_includes = 'Мангал, уголь, розжиг и решётка';
+    } else if (key === 'corpus') {
+      if (!String(r.service_name || '').trim() || String(r.service_name) === 'Аренда корпуса') patch.service_name = 'Тур выходного дня';
+      if (!String(r.price_mode || '').trim()) patch.price_mode = 'per_person';
+      if (!Number(r.price_amount || 0)) patch.price_amount = 1450;
+      if (!String(r.price_unit || '').trim()) patch.price_unit = 'с человека';
+      if (!String(r.price_includes || '').trim()) patch.price_includes = 'Проживание, ужин и завтрак';
+    }
+    if (Object.keys(patch).length) updateObjectRow_(SHEETS.SERVICES, SERVICE_HEADERS, r._row, patch);
+  });
+}
+
+function statusRu_(status) {
+  const map = {hold:'Временная бронь',pending_manager:'Ожидает подтверждения',confirmed:'Подтверждено',rejected:'Отклонено',cancelled:'Отменено',expired:'Истекло'};
+  return map[String(status || '')] || String(status || '');
+}
+
+function formatPriceForManager_(r) {
+  if (String(r.price_text || '').trim()) return String(r.price_text).replace(/^💳\s*/, '');
+  const amount = Number(r.price_amount || 0);
+  return amount ? amount + ' ₽' : '';
+}
+
+function formatManagerSheet_(sh) {
+  sh.setFrozenRows(1);
+  sh.getRange(1,1,1,MANAGER_HEADERS.length).setFontWeight('bold');
+  [4,5,10,11,19].forEach(col => sh.getRange(2,col,Math.max(sh.getMaxRows()-1,1),1).setNumberFormat('dd.MM.yyyy HH:mm'));
+  sh.autoResizeColumns(1,12);
+  try { sh.hideColumns(13,8); } catch (e) {}
+}
+
+function syncManagerSheet_() {
+  const ss = ss_();
+  let sh = ss.getSheetByName(SHEETS.MANAGER);
+  let created = false;
+  if (!sh) { sh = ss.insertSheet(SHEETS.MANAGER); created = true; }
+  if (sh.getMaxColumns() < MANAGER_HEADERS.length) sh.insertColumnsAfter(sh.getMaxColumns(), MANAGER_HEADERS.length - sh.getMaxColumns());
+  sh.getRange(1,1,1,MANAGER_HEADERS.length).setValues([MANAGER_HEADERS]);
+  const previousLastRow = sh.getLastRow();
+  const bookings = rows_(SHEETS.BOOKINGS);
+  const values = bookings.map(r => [
+    statusRu_(r.status),String(r.service_name || ''),String(r.resource_name || ''),r.start_at || '',r.end_at || '',
+    String(r.full_name || ''),String(r.phone || ''),Number(r.guest_count || 0) || '',formatPriceForManager_(r),
+    r.created_at || '',r.updated_at || '',String(r.comment || ''),String(r.booking_id || ''),String(r.service_key || ''),
+    String(r.resource_key || ''),String(r.vk_user_id || ''),String(r.vk_peer_id || ''),String(r.source || ''),r.expires_at || '',String(r.manager_id || '')
+  ]);
+  // Clear only rows that were actually used. Clearing the default ~1000-row sheet on every
+  // hold/submit/manager click adds needless Apps Script latency to the parent booking flow.
+  if (previousLastRow > 1) sh.getRange(2,1,previousLastRow - 1,MANAGER_HEADERS.length).clearContent();
+  if (values.length) sh.getRange(2,1,values.length,MANAGER_HEADERS.length).setValues(values);
+  if (created) formatManagerSheet_(sh);
 }
 
 function rows_(sheetName) {
@@ -190,7 +278,9 @@ function getService_(payload) {
     resource_name:candidates.length === 1 ? String(r.resource_name || '') : '',
     mode:String(r.mode || 'hourly'), open_time:hm_(r.open_time, setting_('timezone', 'Europe/Samara')), close_time:hm_(r.close_time, setting_('timezone', 'Europe/Samara')),
     min_duration_minutes:Number(r.min_duration_minutes || 0), max_duration_minutes:Number(r.max_duration_minutes || 0),
-    max_guests:maxGuests, manager_approval:truthy_(r.manager_approval), notes:String(r.notes || '')
+    max_guests:maxGuests, manager_approval:truthy_(r.manager_approval), notes:String(r.notes || ''),
+    price_mode:String(r.price_mode || ''), price_amount:Number(r.price_amount || 0), price_unit:String(r.price_unit || ''),
+    price_duration_minutes:Number(r.price_duration_minutes || 0), price_includes:String(r.price_includes || '')
   };
 }
 
@@ -304,8 +394,9 @@ function createHold_(payload) {
       end_at:new Date(payload.end_at),full_name:'',phone:'',guest_count:Number(payload.guest_count || 0),
       vk_user_id:String(payload.vk_user_id || ''),vk_peer_id:String(payload.vk_peer_id || ''),source:'VK bot',
       comment:requestId ? ('request_id:' + requestId) : '',
-      created_at:now,updated_at:now,expires_at:expires,manager_id:''
+      created_at:now,updated_at:now,expires_at:expires,manager_id:'',price_amount:'',price_text:''
     });
+    syncManagerSheet_();
     return {available:true,booking_id:bookingId,expires_at:expires.toISOString(),resource_key:resourceKey,resource_name:resourceName};
   } finally { SpreadsheetApp.flush(); lock.releaseLock(); }
 }
@@ -327,6 +418,7 @@ function submitBooking_(payload) {
     const exp = new Date(row.expires_at);
     if (!isNaN(exp) && exp.getTime() < Date.now()) {
       updateObjectRow_(SHEETS.BOOKINGS,BOOKING_HEADERS,row._row,{status:'expired',updated_at:new Date()});
+      syncManagerSheet_();
       return {submitted:false,message:'Время временной брони истекло.'};
     }
     const fullName = String(payload.full_name || '').trim();
@@ -346,12 +438,15 @@ function submitBooking_(payload) {
         status:'cancelled',updated_at:new Date(),expires_at:'',
         comment:'submit_revalidation:' + String(stillValid.reason || 'unavailable')
       });
+      syncManagerSheet_();
       return {submitted:false,message:'Условия бронирования изменились. Нужно заново проверить дату, время и количество гостей.'};
     }
     updateObjectRow_(SHEETS.BOOKINGS,BOOKING_HEADERS,row._row,{
       status:'pending_manager',full_name:fullName,phone:phone,
-      guest_count:guestCount,comment:String(payload.comment || ''),updated_at:new Date(),expires_at:''
+      guest_count:guestCount,comment:String(payload.comment || ''),updated_at:new Date(),expires_at:'',
+      price_amount:payload.price_amount === '' ? '' : Number(payload.price_amount || 0),price_text:String(payload.price_text || '')
     });
+    syncManagerSheet_();
     return {submitted:true,booking_id:String(row.booking_id)};
   } finally { SpreadsheetApp.flush(); lock.releaseLock(); }
 }
@@ -381,6 +476,7 @@ function managerDecision_(payload) {
       if (!stillFree.available) return {updated:false,message:'Перед подтверждением обнаружен конфликт в расписании. Проверьте таблицу.'};
     }
     updateObjectRow_(SHEETS.BOOKINGS,BOOKING_HEADERS,row._row,{status:next,updated_at:new Date(),manager_id:String(payload.manager_id || '')});
+    syncManagerSheet_();
     return {
       updated:true,booking_id:String(row.booking_id),status:next,vk_user_id:String(row.vk_user_id || ''),vk_peer_id:String(row.vk_peer_id || ''),
       service_name:String(row.service_name || ''),resource_name:String(row.resource_name || ''),start_at:String(row.start_at || ''),end_at:String(row.end_at || '')
@@ -396,6 +492,7 @@ function cancelBooking_(payload) {
     if (!row) return {cancelled:false};
     if (['cancelled','rejected','expired'].indexOf(String(row.status)) >= 0) return {cancelled:true,already:true};
     updateObjectRow_(SHEETS.BOOKINGS,BOOKING_HEADERS,row._row,{status:'cancelled',comment:String(payload.reason || row.comment || ''),updated_at:new Date(),expires_at:''});
+    syncManagerSheet_();
     return {cancelled:true};
   } finally { SpreadsheetApp.flush(); lock.releaseLock(); }
 }
@@ -409,9 +506,14 @@ function getBooking_(payload) {
 
 function cleanupExpiredHolds_() {
   const now = Date.now();
+  let changed = false;
   rows_(SHEETS.BOOKINGS).forEach(r => {
     if (String(r.status) !== 'hold' || !r.expires_at) return;
     const exp = new Date(r.expires_at);
-    if (!isNaN(exp) && exp.getTime() < now) updateObjectRow_(SHEETS.BOOKINGS,BOOKING_HEADERS,r._row,{status:'expired',updated_at:new Date()});
+    if (!isNaN(exp) && exp.getTime() < now) {
+      updateObjectRow_(SHEETS.BOOKINGS,BOOKING_HEADERS,r._row,{status:'expired',updated_at:new Date()});
+      changed = true;
+    }
   });
+  if (changed) syncManagerSheet_();
 }

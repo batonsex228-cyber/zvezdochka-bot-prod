@@ -157,6 +157,64 @@ class BookingResult:
         return self.state == "confirm_parent"
 
 
+PUBLIC_RENTAL_CATALOG: dict[str, dict[str, Any]] = {
+    "gazebo": {
+        "name": "Аренда беседки",
+        "price_amount": 3300,
+        "price_unit": "за 3 часа",
+        "price_duration_minutes": 180,
+        "includes": "мангал, уголь, розжиг и решётка",
+        "source": "official_site",
+    },
+    "corpus": {
+        "name": "Тур выходного дня",
+        "price_amount": 1450,
+        "price_unit": "с человека",
+        "includes": "проживание, ужин и завтрак",
+        "source": "official_site",
+    },
+}
+
+
+def public_rental_info(text: str) -> str | None:
+    """Answer stable public rental-price/conditions questions without starting a booking.
+
+    These values mirror the camp's official extra-services page for this release.
+    Dynamic availability is deliberately not answered here.
+    """
+    n = _norm(text)
+    service = _service_from_text(n)
+    info_markers = [
+        "сколько стоит", "сколько будет стоить", "сколько будет сто", "сколько аренда",
+        "сколько нужно заплатить", "сколько заплатить", "во сколько обойд", "по чем",
+        "какая цена", "цена", "стоимость", "что входит",
+        "входит в стоимость", "условия арен", "расскажите про арен",
+        "есть ли аренда", "у вас есть аренда", "почем",
+    ]
+    dynamic_clue = any(x in n for x in ["свобод", "занят", "мест на", "места на"]) or bool(
+        re.search(r"\b(?:сегодня|завтра|послезавтра|\d{1,2}[./-]\d{1,2}|\d{1,2}\s+(?:январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр))", n)
+    )
+    package_presence = service == "corpus" and not dynamic_clue and (
+        (("тур выходного дня" in n or "тур на выходные" in n) and any(x in n for x in ["есть ли", "у вас есть", "что такое", "расскажите"]))
+        or bool(re.search(r"(?:есть ли|у вас есть).*(?:корпус|проживан|ночев)", n))
+    )
+    gazebo_presence = service == "gazebo" and not dynamic_clue and bool(
+        re.search(r"(?:есть ли|у вас есть).*(?:бесед|газеб)", n)
+    )
+    if service not in PUBLIC_RENTAL_CATALOG or not (any(x in n for x in info_markers) or package_presence or gazebo_presence):
+        return None
+    if service == "gazebo":
+        return (
+            "Да 😊 Беседки можно арендовать. Стоимость — 3 300 ₽ за 3 часа. "
+            "В стоимость входят мангал, уголь, розжиг и решётка.\n\n"
+            "Если хотите оформить бронь, напишите дату — я помогу проверить свободную беседку."
+        )
+    return (
+        "Для проживания у лагеря есть формат «Тур выходного дня» — 1 450 ₽ с человека. "
+        "В стоимость входят проживание, ужин и завтрак.\n\n"
+        "Если хотите оставить заявку, напишите даты и примерное количество гостей."
+    )
+
 _MONTHS = {
     "январ": 1, "феврал": 2, "март": 3, "апрел": 4, "май": 5, "мая": 5,
     "июн": 6, "июл": 7, "август": 8, "сентябр": 9, "октябр": 10,
@@ -165,16 +223,34 @@ _MONTHS = {
 
 
 def _norm(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").strip().lower().replace("ё", "е"))
+    n = re.sub(r"\s+", " ", (text or "").strip().lower().replace("ё", "е"))
+    # Tolerate a couple of very common month typos seen in real parent messages.
+    # Keep this deliberately narrow so normal words are never rewritten.
+    n = re.sub(r"\bокт(?:б|еб)ря\b", "октября", n)
+    return n
 
 
 def _service_from_text(n: str) -> str | None:
     if any(x in n for x in ["бесед", "газеб"]):
         return "gazebo"
-    if any(x in n for x in ["аренд" , "снять", "снимем", "заброни"]) and any(x in n for x in ["корпус", "домик"]):
+    # The named public package is unambiguous even without an explicit verb.
+    if "тур выходного дня" in n or "тур на выходные" in n:
         return "corpus"
-    if "корпус" in n and any(x in n for x in ["свобод", "занят", "доступ"]):
-        return "corpus"
+    corpus_words = [
+        "корпус", "домик", "проживан", "ночевк", "ночёвк",
+    ]
+    if any(x in n for x in corpus_words):
+        # Do not treat a generic phrase such as «хочу узнать, в каком корпусе
+        # будет ребёнок» as a rental. Require a rental/availability/price clue
+        # or an explicit short desire for accommodation.
+        if any(x in n for x in [
+            "аренд", "снять", "снимем", "сниму", "заброни", "бронь", "свобод",
+            "занят", "доступ", "стоим", "цена", "сколько", "что входит", "есть ли", "у вас есть", "на выходн",
+            "хочу корпус", "хотим корпус", "нужен корпус",
+            "хочу прожив", "хотим прожив", "нужно прожив",
+            "хочу ночев", "хотим ночев", "нужна ночев",
+        ]):
+            return "corpus"
     return None
 
 
@@ -185,15 +261,25 @@ def _looks_booking(n: str) -> bool:
     # Mentioning an object is not enough. Information about price/conditions must stay in
     # the normal FAQ/handoff flow even if the sentence contains the word «аренда».
     informational = any(x in n for x in [
-        "сколько стоит", "какая цена", "цена арен", "стоимость арен", "что входит",
+        "сколько стоит", "сколько будет стоить", "сколько будет сто", "сколько аренда",
+        "сколько нужно заплатить", "сколько заплатить", "во сколько обойд", "по чем",
+        "какая цена", "цена арен", "стоимость арен", "что входит",
         "какие условия", "условия арен", "расскажите про", "расскажите об",
+        "есть ли аренда", "у вас есть аренда", "почем",
     ])
     strong_markers = [
         "заброн", "бронь", "брониров", "снять", "снимем", "сниму",
-        "свобод", "занят", "доступ", "хочу", "нужна бесед", "нужен корпус",
-        "запис", "заказать", "оформить",
+        "свобод", "занят", "доступ", "нужна бесед", "нужен корпус",
+        "запис", "заказать", "оформить", "нужно прож", "нужна ночев",
+        "хочу бесед", "хотим бесед", "хочу корпус", "хотим корпус",
+        "хочу прожив", "хотим прожив", "хочу ночев", "хотим ночев",
+        "хочу аренд", "хотим аренд",
     ]
     if any(x in n for x in strong_markers):
+        return True
+    if service == "corpus" and any(x in n for x in ["хочу", "хотим", "нужен", "нужно"]) and (
+        "тур выходного дня" in n or "тур на выходные" in n or "на выходн" in n
+    ):
         return True
     if "аренд" in n and not informational:
         return True
@@ -249,6 +335,8 @@ def _looks_unrelated_support_question(n: str) -> bool:
         "забыл вещ", "забыла вещ", "вернуть путев", "возврат путев", "перенести ребенка",
         "поменять смен", "не проходит оплат", "не могу оплат", "обижают", "буллинг",
         "конфликт в отряде", "не могу дозвон", "связаться с ребен",
+        "мероприят", "корпоратив", "выпускн", "день рождения", "свадьб",
+        "юбилей", "банкет", "конференц", "соревнован", "турнир",
     ]
     if any(x in n for x in topic_markers):
         return True
@@ -271,11 +359,22 @@ def _parse_phone(text: str) -> str | None:
 
 
 def _parse_guest_count(n: str) -> int | None:
-    m = re.search(r"\b(\d{1,3})\s*(?:человек|чел\.?|гостей|гостя|детей|взрослых)\b", n)
-    if not m:
-        return None
-    value = int(m.group(1))
-    return value if 1 <= value <= 999 else None
+    # Common parent wording: «10 человек», «нас 10», «нас будет 10»,
+    # «будет примерно 10».  Keep the patterns narrow so dates/phones are not
+    # accidentally consumed as party size.
+    patterns = [
+        r"\b(\d{1,3})\s*(?:человек|чел\.?|гостей|гостя|детей|взрослых)\b",
+        r"\bнас\s+(?:будет\s+)?(?:примерно\s+|около\s+)?(\d{1,3})\b",
+        r"\bбудет\s+(?:примерно\s+|около\s+)?(\d{1,3})\s*(?:человек|чел\.?|гостей)?\b",
+    ]
+    for pattern in patterns:
+        m = re.search(pattern, n)
+        if not m:
+            continue
+        value = int(m.group(1))
+        if 1 <= value <= 999:
+            return value
+    return None
 
 
 def _parse_duration_minutes(n: str) -> int | None:
@@ -501,6 +600,19 @@ class BookingEngine:
             ttl_minutes=max(self.settings.booking_hold_minutes * 4, 60), platform="vk",
         )
 
+    @staticmethod
+    def _progress(step: int, title: str, body: str) -> str:
+        return f"📝 Бронирование · шаг {step} из 3 · {title}\n\n{body}"
+
+    @staticmethod
+    def _duration_example(service: dict[str, Any]) -> str:
+        minutes = int(service.get("min_duration_minutes") or 0)
+        if minutes and minutes % 60 == 0:
+            hours = minutes // 60
+            word = "час" if hours % 10 == 1 and hours % 100 != 11 else ("часа" if hours % 10 in {2, 3, 4} and hours % 100 not in {12, 13, 14} else "часов")
+            return f"Например: «{hours} {word}»."
+        return "Например: «3 часа»."
+
     async def _cancel_external_if_any(self, payload: dict[str, Any], *, reason: str) -> None:
         booking_id = str(payload.get("booking_id") or "")
         if not booking_id:
@@ -556,6 +668,8 @@ class BookingEngine:
                     "phone": payload.get("phone"),
                     "guest_count": payload.get("guest_count"),
                     "comment": payload.get("comment", ""),
+                    "price_amount": self._price_details(payload, payload.get("service_info") or {})[0] or "",
+                    "price_text": self._price_details(payload, payload.get("service_info") or {})[1],
                 })
             except BookingAPIError:
                 return BookingResult(True, state="escalate", error_reason="booking_backend_unavailable")
@@ -566,6 +680,7 @@ class BookingEngine:
             self._save(user, "pending_manager", payload, status="pending_manager")
             service = payload.get("service_info") or {}
             start_text = self._period_text(payload, service)
+            _price_amount, price_text = self._price_details(payload, service)
             manager_text = (
                 f"📅 Новая заявка на бронирование\n\n"
                 f"ID: {booking_id}\n"
@@ -574,8 +689,9 @@ class BookingEngine:
                 f"Гостей: {payload.get('guest_count')}\n"
                 f"ФИО: {payload.get('full_name')}\n"
                 f"Телефон: {payload.get('phone')}\n"
+                f"Стоимость: {price_text.replace('💳 ', '') if price_text else 'уточнить'}\n"
                 f"VK: https://vk.ru/{user.username}" if user.username else
-                f"📅 Новая заявка на бронирование\n\nID: {booking_id}\nУслуга: {service.get('service_name') or payload.get('service_key')}\nКогда: {start_text}\nГостей: {payload.get('guest_count')}\nФИО: {payload.get('full_name')}\nТелефон: {payload.get('phone')}\nVK: https://vk.ru/id{user.user_id}"
+                f"📅 Новая заявка на бронирование\n\nID: {booking_id}\nУслуга: {service.get('service_name') or payload.get('service_key')}\nКогда: {start_text}\nГостей: {payload.get('guest_count')}\nФИО: {payload.get('full_name')}\nТелефон: {payload.get('phone')}\nСтоимость: {price_text.replace('💳 ', '') if price_text else 'уточнить'}\nVK: https://vk.ru/id{user.user_id}"
             )
             return BookingResult(
                 True,
@@ -605,7 +721,11 @@ class BookingEngine:
         dates, date_error = _candidate_dates(date_text, today=self._today())
         if date_error:
             self._save(user, "date", payload)
-            return BookingResult(True, date_error + " Подскажите, пожалуйста, правильную дату.", state="collecting")
+            return BookingResult(
+                True,
+                self._progress(1, "Дата и время", date_error + " Подскажите, пожалуйста, правильную дату."),
+                state="collecting",
+            )
         if dates:
             if len(dates) > 1:
                 payload["start_date"] = dates[0].isoformat()
@@ -661,7 +781,11 @@ class BookingEngine:
 
         if not payload.get("service_key"):
             self._save(user, "service", payload)
-            return BookingResult(True, "Что хотите забронировать — беседку или аренду корпуса?", state="collecting")
+            return BookingResult(
+                True,
+                self._progress(1, "Что бронируем", "Для начала уточним услугу 😊 Что хотите забронировать — беседку или аренду корпуса?"),
+                state="collecting",
+            )
 
         try:
             service = await self._service_info(payload)
@@ -671,29 +795,54 @@ class BookingEngine:
         mode = str(service.get("mode") or "hourly")
         if not payload.get("start_date"):
             self._save(user, "date", payload)
-            return BookingResult(True, "На какую дату хотите забронировать? Напишите, например: «12 октября». ", state="collecting")
+            target = "беседку" if payload.get("service_key") == "gazebo" else ("корпус" if payload.get("service_key") == "corpus" else "объект")
+            return BookingResult(
+                True,
+                self._progress(1, "Дата и время", f"Для начала выберем дату 😊 На какой день хотите забронировать {target}?\nНапишите, например: «12 октября»."),
+                state="collecting",
+            )
 
         start_date = date.fromisoformat(str(payload["start_date"]))
         if start_date < self._today():
             payload.pop("start_date", None)
             self._save(user, "date", payload)
-            return BookingResult(True, "Эта дата уже прошла. Подскажите, пожалуйста, будущую дату.", state="collecting")
+            return BookingResult(
+                True,
+                self._progress(1, "Дата и время", "Эта дата уже прошла. Подскажите, пожалуйста, будущую дату."),
+                state="collecting",
+            )
 
         if mode == "date_range":
             if not payload.get("end_date"):
                 self._save(user, "end_date", payload)
-                return BookingResult(True, f"С какого дня понял: {_format_ru_date(payload['start_date'])}. До какого числа нужен корпус?", state="collecting")
+                return BookingResult(
+                    True,
+                    self._progress(1, "Дата аренды", f"Отлично, дату начала записал: {_format_ru_date(payload['start_date'])} 💛\nДо какого числа нужен корпус?"),
+                    state="collecting",
+                )
             if date.fromisoformat(str(payload["end_date"])) < start_date:
                 payload.pop("end_date", None)
                 self._save(user, "end_date", payload)
-                return BookingResult(True, "Дата окончания получилась раньше даты начала. Напишите, пожалуйста, дату окончания ещё раз.", state="collecting")
+                return BookingResult(
+                    True,
+                    self._progress(1, "Дата аренды", "Дата окончания получилась раньше даты начала. Напишите, пожалуйста, дату окончания ещё раз."),
+                    state="collecting",
+                )
         else:
             if not payload.get("start_time"):
                 self._save(user, "time", payload)
-                return BookingResult(True, f"На {_format_ru_date(payload['start_date'])} какое время нужно? Например: «14:00». ", state="collecting")
+                return BookingResult(
+                    True,
+                    self._progress(1, "Дата и время", f"Отлично, дату записал: {_format_ru_date(payload['start_date'])} 💛\nТеперь подскажите, пожалуйста, во сколько хотите начать аренду? Например: «14:00»."),
+                    state="collecting",
+                )
             if not payload.get("duration_minutes"):
                 self._save(user, "duration", payload)
-                return BookingResult(True, "На сколько часов нужна беседка?", state="collecting")
+                return BookingResult(
+                    True,
+                    self._progress(1, "Дата и время", f"Спасибо! А на сколько часов хотите забронировать беседку?\n{self._duration_example(service)}"),
+                    state="collecting",
+                )
 
             # Never create a hold for a time that has already passed today.
             hh, mm = map(int, str(payload["start_time"]).split(":"))
@@ -704,7 +853,7 @@ class BookingEngine:
                 self._save(user, "time", payload)
                 return BookingResult(
                     True,
-                    "Это время уже прошло. Подскажите, пожалуйста, другое время сегодня или будущую дату.",
+                    self._progress(1, "Дата и время", "Это время уже прошло. Подскажите, пожалуйста, другое время сегодня или будущую дату."),
                     state="collecting",
                 )
 
@@ -713,12 +862,26 @@ class BookingEngine:
         max_guests = int(service.get("max_guests") or 0)
         if not payload.get("guest_count"):
             self._save(user, "guest_count", payload)
-            return BookingResult(True, "Сколько примерно будет человек?", state="collecting")
+            if max_guests and payload.get("service_key") == "gazebo":
+                limit = f" В одной беседке — до {max_guests} человек."
+            elif max_guests:
+                limit = f" Максимум — {max_guests} человек."
+            else:
+                limit = ""
+            return BookingResult(
+                True,
+                self._progress(2, "Гости", f"Хорошо 😊 Сколько примерно будет человек? Подскажите, пожалуйста.{limit}"),
+                state="collecting",
+            )
         if int(payload["guest_count"]) <= 0 or (max_guests and int(payload["guest_count"]) > max_guests):
             payload.pop("guest_count", None)
             self._save(user, "guest_count", payload)
             limit = f" Максимум для этой услуги — {max_guests} человек." if max_guests else ""
-            return BookingResult(True, "Проверьте, пожалуйста, количество гостей." + limit, state="collecting")
+            return BookingResult(
+                True,
+                self._progress(2, "Гости", "Проверьте, пожалуйста, количество гостей." + limit),
+                state="collecting",
+            )
 
         # Make a real hold only after the complete slot and party size are known.
         if not payload.get("booking_id"):
@@ -755,7 +918,11 @@ class BookingEngine:
                     message = "Выбранный интервал не подходит под правила аренды этого объекта."
                 else:
                     message = "К сожалению, выбранное время уже занято."
-                return BookingResult(True, message + extra + "\n\nНапишите другое время/дату — я сразу перепроверю.", state="unavailable")
+                return BookingResult(
+                    True,
+                    self._progress(1, "Дата и время", message + extra + "\n\nНапишите другое время или дату — я сразу перепроверю."),
+                    state="unavailable",
+                )
             payload["booking_id"] = str(hold.get("booking_id") or "")
             payload["hold_expires_at"] = hold.get("expires_at")
             if hold.get("resource_name"):
@@ -763,17 +930,27 @@ class BookingEngine:
 
         if not payload.get("full_name"):
             self._save(user, "full_name", payload)
-            return BookingResult(True, "Напишите, пожалуйста, ФИО человека, на которого оформляем заявку.", state="collecting")
+            return BookingResult(
+                True,
+                self._progress(3, "Контакты", "Почти готово 😊 Напишите, пожалуйста, ФИО человека, на которого оформляем заявку."),
+                state="collecting",
+            )
 
         if not payload.get("phone"):
             self._save(user, "phone", payload)
-            return BookingResult(True, "И номер телефона для связи, пожалуйста. Например: +7 912 345-67-89", state="collecting")
+            return BookingResult(
+                True,
+                self._progress(3, "Контакты", "И последний вопрос — номер телефона для связи, пожалуйста. Например: +7 912 345-67-89"),
+                state="collecting",
+            )
 
         self._save(user, "confirm_parent", payload)
         period = self._period_text(payload, service)
         service_name = service.get("service_name") or payload.get("service_key")
         resource = payload.get("resource_name") or service.get("resource_name") or ""
         resource_line = f"\n📍 {resource}" if resource else ""
+        _price_amount, price_text = self._price_details(payload, service)
+        price_block = f"\n\n{price_text}" if price_text else ""
         return BookingResult(
             True,
             f"Проверьте заявку, пожалуйста:\n\n"
@@ -782,9 +959,37 @@ class BookingEngine:
             f"👥 {payload['guest_count']} человек\n"
             f"👤 {payload['full_name']}\n"
             f"📞 {payload['phone']}\n\n"
-            "Если всё верно — подтвердите заявку. До подтверждения менеджером это ещё не окончательная бронь.",
+            "Если всё верно — подтвердите заявку. До подтверждения менеджером это ещё не окончательная бронь."
+            f"{price_block}",
             state="confirm_parent", booking_id=str(payload.get("booking_id") or ""),
         )
+
+    @staticmethod
+    def _price_details(payload: dict[str, Any], service: dict[str, Any]) -> tuple[int | None, str]:
+        key = str(payload.get("service_key") or service.get("service_key") or "")
+        catalog = PUBLIC_RENTAL_CATALOG.get(key) or {}
+        amount = int(service.get("price_amount") or catalog.get("price_amount") or 0)
+        guests = int(payload.get("guest_count") or 0)
+        if key == "gazebo":
+            duration = int(payload.get("duration_minutes") or 0)
+            standard = int(service.get("price_duration_minutes") or catalog.get("price_duration_minutes") or 180)
+            unit = str(service.get("price_unit") or catalog.get("price_unit") or "за 3 часа")
+            if duration == standard and amount:
+                return amount, f"💳 К ОПЛАТЕ: {amount:,} ₽".replace(",", " ")
+            hours = duration / 60 if duration else 0
+            hours_text = f"{hours:g}".replace(".", ",")
+            if amount:
+                return None, (
+                    f"💳 СТОИМОСТЬ: {amount:,} ₽ {unit}. ".replace(",", " ")
+                    + f"Для аренды на {hours_text} ч итоговую сумму подтвердит менеджер."
+                )
+            return None, ""
+        if key == "corpus" and amount and guests:
+            total = amount * guests
+            return total, (
+                f"💳 К ОПЛАТЕ: {total:,} ₽ ({amount:,} ₽ × {guests} чел.)".replace(",", " ")
+            )
+        return None, ""
 
     def _interval_payload(self, payload: dict[str, Any], service: dict[str, Any]) -> dict[str, str]:
         mode = str(service.get("mode") or "hourly")

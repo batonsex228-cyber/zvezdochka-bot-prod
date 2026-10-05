@@ -63,7 +63,7 @@ def core_env():
 
 
 class VersionConfigTests(unittest.TestCase):
-    def test_version(self): self.assertEqual(VERSION, "6.0.1")
+    def test_version(self): self.assertEqual(VERSION, "6.0.3")
     def test_no_aiogram_requirement(self): self.assertNotIn("aiogram", (ROOT / "requirements.txt").read_text())
     def test_no_telegram_secret_in_env_example(self): self.assertNotIn("TELEGRAM_BOT_TOKEN", (ROOT / ".env.example").read_text())
     def test_vk_required_in_env_example(self):
@@ -163,7 +163,7 @@ class CoreAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self): self.td.cleanup()
     async def test_pinned_shifts(self):
         r=await self.core.process("anything",intent="shifts_prices"); self.assertTrue(r.supported); self.assertIn("Зимняя смена",r.answer.text)
-    async def test_specific_shift(self): r=await self.core.process("когда вторая",intent="shift_2"); self.assertTrue(r.supported); self.assertEqual(r.answer.faq_id,"shift-2-2026")
+    async def test_specific_shift(self): r=await self.core.process("когда вторая",intent="shift_2"); self.assertTrue(r.supported); self.assertEqual(r.answer.faq_id,"shift-2-2027")
     async def test_food(self): r=await self.core.process("еда",intent="food"); self.assertTrue(r.supported)
     async def test_documents(self): r=await self.core.process("079",intent="documents"); self.assertTrue(r.supported)
     async def test_unknown_intent(self): r=await self.core.process("x",intent="nonsense"); self.assertFalse(r.supported)

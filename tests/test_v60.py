@@ -66,7 +66,7 @@ def core_env(tmp: Path, s: Settings, db: Database):
 
 class V60ReleaseTests(unittest.TestCase):
     def test_version(self):
-        self.assertEqual(VERSION, "6.0.1")
+        self.assertEqual(VERSION, "6.0.3")
 
     def test_env_flags_are_safe_off(self):
         text = (ROOT / ".env.example").read_text(encoding="utf-8")
@@ -649,7 +649,7 @@ class AdapterIntegrationTests(unittest.IsolatedAsyncioTestCase):
             count=c.execute("SELECT COUNT(*) FROM tickets").fetchone()[0]
         self.assertEqual(count,0)
         sent="\n".join(c.args[1] for c in self.a.send_message.await_args_list)
-        self.assertIn("2 700", sent)
+        self.assertIn("3 300", sent)
 
     async def test_stale_intake_button_gets_answer_when_feature_is_disabled(self):
         self.a.intake = None
