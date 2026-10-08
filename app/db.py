@@ -170,6 +170,29 @@ class Database:
                     PRIMARY KEY(platform,user_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS shift_sessions (
+                    platform TEXT NOT NULL DEFAULT 'vk',
+                    user_id INTEGER NOT NULL, peer_id INTEGER NOT NULL,
+                    step TEXT NOT NULL, payload_json TEXT NOT NULL DEFAULT '{}',
+                    expires_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY(platform,user_id)
+                );
+                CREATE TABLE IF NOT EXISTS shift_applications (
+                    application_id TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL, peer_id INTEGER NOT NULL,
+                    shift_number INTEGER NOT NULL CHECK(shift_number BETWEEN 1 AND 5),
+                    child_name TEXT NOT NULL, child_birth_date TEXT NOT NULL,
+                    parent_name TEXT NOT NULL, phone TEXT NOT NULL,
+                    consent_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'new',
+                    payment_status TEXT NOT NULL DEFAULT 'not_paid',
+                    manager_id INTEGER,
+                    sync_status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_shift_status ON shift_applications(status,created_at);
+
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_faq_unique ON manual_faq(question, answer);
                 CREATE INDEX IF NOT EXISTS idx_ticket_support_message ON tickets(support_message_id);
                 CREATE INDEX IF NOT EXISTS idx_ticket_status ON tickets(status);

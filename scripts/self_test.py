@@ -18,7 +18,7 @@ def fail(message: str) -> int:
 
 
 def main() -> int:
-    print("[SELFTEST] Release: v6.0.3 RENTALS + MANAGER SHEET + PRICING · VK-FIRST", flush=True)
+    print("[SELFTEST] Release: v6.0.4 SHIFT APPLICATIONS + SHEETS · VK-FIRST", flush=True)
 
     print("[SELFTEST] Python compile...", flush=True)
     for rel in ["app", "scripts", "tests"]:

@@ -26,6 +26,11 @@ class Range {
     return this;
   }
   setValue(value) { this.sheet.set(this.row, this.col, value); return this; }
+  getValue() { return this.sheet.get(this.row,this.col); }
+  setBackground() { return this; }
+  setFontColor() { return this; }
+  createFilter() { this.sheet.filter=true; return this; }
+  createTextFinder(value) { return {matchEntireCell() {return this;}, findNext: () => {for(let r=0;r<this.numRows;r++) for(let c=0;c<this.numCols;c++) if(String(this.sheet.get(this.row+r,this.col+c))===String(value)) return {getRow:()=>this.row+r}; return null;}}; }
   setNumberFormat() { return this; }
   setFontWeight() { return this; }
   clearContent() {
@@ -54,6 +59,8 @@ class Sheet {
   setFrozenRows() { return this; }
   autoResizeColumns() { return this; }
   hideColumns() { return this; }
+  setColumnWidths() { return this; }
+  getFilter() { return this.filter || null; }
   get(row, col) { return (this.data[row - 1] || [])[col - 1] ?? ''; }
   set(row, col, value) {
     while (this.data.length < row) this.data.push([]);
@@ -117,6 +124,12 @@ vm.runInContext(code, context);
 
 context.setupSpreadsheet();
 assert(properties.API_SECRET, 'setup did not generate API secret');
+for (let n=1;n<=5;n++) {
+  const sh=spreadsheet.getSheetByName('Смена '+n);
+  assert(sh && sh.get(1,4)==='ФИО ребёнка','shift tab '+n+' not created');
+}
+assert(properties.SHIFT_PII_EXPORT_ALLOWED==='false','PII export must default disabled');
+
 assert(spreadsheet.timeZone === 'Europe/Samara', 'spreadsheet timezone must be Europe/Samara');
 
 const services = spreadsheet.getSheetByName('Объекты и услуги');
@@ -126,6 +139,35 @@ function post(action, payload = {}, secret = properties.API_SECRET) {
   const output = context.doPost({postData: {contents: JSON.stringify({secret, action, payload})}});
   return JSON.parse(output.body);
 }
+
+// Shift applications: idempotency, no data leaks by default, approval, tab separation.
+const shiftBase={application_id:'ZV-AABBCCDDEEFF',shift_number:2,status:'new',
+  payment_status:'not_paid',user_id:712,manager_id:'',
+  child_name:'=HYPERLINK("https://evil.test")', child_birth_date:'15.07.2015',
+  parent_name:'Иванова Мария Александровна',phone:'+79121234567',
+  created_at:'2026-10-08 12:00:00',updated_at:'2026-10-08 12:00:00',export_pii:true};
+let shiftSave=post('upsert_shift_application',shiftBase);
+assert(shiftSave.ok && shiftSave.result.saved,'shift create failed');
+let shiftSh=spreadsheet.getSheetByName('Смена 2');
+assert(shiftSh.getLastRow()===2,'shift must create one row');
+assert(shiftSh.get(2,4)==='' && shiftSh.get(2,7)==='','PII leaked without dual opt in');
+post('upsert_shift_application',shiftBase);
+assert(shiftSh.getLastRow()===2,'duplicate shift application created');
+properties.SHIFT_PII_EXPORT_ALLOWED='true';
+shiftSave=post('upsert_shift_application',{...shiftBase,updated_at:'2026-10-08 12:00:01'});
+assert(shiftSave.ok && shiftSh.get(2,4).startsWith("'="),'formula injection not blocked');
+assert(shiftSh.get(2,7).startsWith("'+7"),'phone leading plus not safely stored');
+post('upsert_shift_application',{...shiftBase,status:'confirmed',manager_id:'9',updated_at:'2026-10-08 12:00:02'});
+assert(shiftSh.get(2,8)==='Подтверждена','manager status sync failed');
+const wrongShift=post('upsert_shift_application',{...shiftBase,shift_number:3});
+assert(!wrongShift.ok,'moving existing id to different shift must fail');
+const obsolete=post('upsert_shift_application',{...shiftBase,status:'new',updated_at:'2026-10-08 12:00:00'});
+assert(obsolete.ok && shiftSh.get(2,8)==='Подтверждена','older retry rolled back manager status');
+const sameTimeRetry=post('upsert_shift_application',{...shiftBase,status:'new',updated_at:'2026-10-08 12:00:02'});
+assert(sameTimeRetry.ok && shiftSh.get(2,8)==='Подтверждена','equal-timestamp retry rolled back manager status');
+const injection=post('upsert_shift_application',{...shiftBase,application_id:'=BAD'});
+assert(!injection.ok,'invalid ID allowed');
+properties.SHIFT_PII_EXPORT_ALLOWED='false';
 
 // Enabled but incomplete rows must fail closed.
 let service = post('get_service', {service_key: 'gazebo'});
@@ -235,7 +277,7 @@ assert(techBookings.getLastRow() === rowsBeforeUpgradeRerun, 'setup rerun delete
 const preserved = post('get_booking', {booking_id: hold3.result.booking_id});
 assert(preserved.result.found && preserved.result.booking.status === 'confirmed', 'setup rerun damaged an existing confirmed booking');
 const versionSetting = spreadsheet.getSheetByName('Настройки').getDataRange().getValues().find(r => r[0] === 'version');
-assert(versionSetting && versionSetting[1] === '5.9.2', 'schema version was not upgraded in Settings');
+assert(versionSetting && versionSetting[1] === '6.0.4', 'schema version was not upgraded in Settings');
 
 
 // Exact v5.9.1 -> v5.9.2 migration smoke: production already has 19-column

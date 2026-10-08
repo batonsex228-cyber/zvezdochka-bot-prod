@@ -95,7 +95,7 @@ class FakeBookingBackend:
 
 class SocialClassifierTests(unittest.TestCase):
     def test_release_version(self):
-        self.assertEqual(VERSION, "6.0.3")
+        self.assertEqual(VERSION, "6.0.4")
 
     def test_thanks_variants(self):
         for text in ["Спасибо", "Спасибо большое!", "Понятно, спасибо 😊", "Благодарю Вас"]:

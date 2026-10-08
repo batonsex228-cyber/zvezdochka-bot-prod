@@ -100,7 +100,7 @@ class BookingTransportHotfixTests(unittest.IsolatedAsyncioTestCase):
             await backend.close()
 
     def test_release_version(self):
-        self.assertEqual(VERSION, "6.0.3")
+        self.assertEqual(VERSION, "6.0.4")
 
 
 if __name__ == "__main__":

@@ -105,6 +105,11 @@ class Settings:
     smart_handoff_enabled: bool = False
     smart_handoff_ttl_minutes: int = 90
     knowledge_loop_enabled: bool = False
+    # v6.0.4: disabled until updated Apps Script, privacy notice and manager are set.
+    shift_bookings_enabled: bool = False
+    shift_privacy_policy_url: str = ""
+    shift_active_numbers: tuple[int, ...] = (1, 2, 3)
+    shift_export_pii_to_google: bool = False
 
 
 def load_settings() -> Settings:
@@ -167,4 +172,8 @@ def load_settings() -> Settings:
         smart_handoff_enabled=_bool_env("SMART_HANDOFF_ENABLED", False),
         smart_handoff_ttl_minutes=_bounded_int_env("SMART_HANDOFF_TTL_MINUTES", 90, 15, 24 * 60),
         knowledge_loop_enabled=_bool_env("KNOWLEDGE_LOOP_ENABLED", False),
+        shift_bookings_enabled=_bool_env("SHIFT_BOOKINGS_ENABLED", False),
+        shift_privacy_policy_url=os.getenv("SHIFT_PRIVACY_POLICY_URL", "").strip(),
+        shift_active_numbers=tuple(sorted({int(v) for v in os.getenv("SHIFT_ACTIVE_NUMBERS", "1,2,3").split(',') if v.strip() in {'1','2','3','4','5'}})),
+        shift_export_pii_to_google=_bool_env("SHIFT_EXPORT_PII_TO_GOOGLE", False),
     )

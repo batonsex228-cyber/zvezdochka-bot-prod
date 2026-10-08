@@ -96,6 +96,13 @@ def manager_booking_keyboard(booking_id: str) -> str:
         _callback("❌ Отклонить", {"action": "booking_manager", "cmd": "reject", "booking_id": booking_id}, "negative"),
     ]])
 
+def manager_shift_keyboard(application_id: str) -> str:
+    return _dump([[
+        _callback("✅ Подтвердить заявку", {"action":"shift_manager", "cmd":"approve", "application_id":application_id}, "positive"),
+        _callback("❌ Отклонить заявку", {"action":"shift_manager", "cmd":"reject", "application_id":application_id}, "negative"),
+    ]])
+
+
 def parent_intake_confirmation_keyboard() -> str:
     return _dump([[
         _callback("✅ Передать специалисту", {"action": "intake_parent", "cmd": "confirm"}, "positive"),

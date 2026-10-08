@@ -64,7 +64,7 @@ def env(*, fallback=True):
 
 class VersionAndLiveSeedTests(unittest.TestCase):
     def test_version_is_57(self):
-        self.assertEqual(VERSION, "6.0.3")
+        self.assertEqual(VERSION, "6.0.4")
 
     def test_live_dialog_seed_can_work_without_website_snapshot(self):
         td, tmp, db, s, kb, responder, core = env(fallback=False)

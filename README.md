@@ -1,4 +1,13 @@
-# Current release: v6.0.3 — Rentals + Manager Sheet + Pricing
+# Current release: v6.0.4 — Shift Applications
+
+- оформляем заявки на путёвки на смены с согласием и анкетой во ВКонтакте;
+- пять русскоязычных вкладок в существующей Google-таблице;
+- менеджер подтверждает заявки в VK; SQLite и безопасная Google-синхронизация;
+- безопасное включение через флаги в `.env`.
+
+См. `CHANGELOG_v6_0_4.md`, `PATCH_v6_0_4_README.md` и `google_apps_script/SHIFT_APPLICATIONS_SETUP_RU.md`.
+
+## Ранее: v6.0.3 — Rentals + Manager Sheet + Pricing
 
 - manager-friendly Russian booking journal in Google Sheets;
 - official rental prices and price totals in confirmation;

@@ -4,7 +4,8 @@ import asyncio
 import traceback
 from pathlib import Path
 
-from .booking import BookingEngine
+from .booking import BookingEngine, AppsScriptBookingBackend
+from .shift_booking import ShiftEngine
 from .config import PROJECT_ROOT, Settings, load_settings
 from .core import SupportCore
 from .crawler import crawl_site
@@ -62,7 +63,18 @@ async def run() -> int:
     elif settings.smart_handoff_enabled:
         intake_disabled_reason = "VK_MANAGER_USER_ID is required"
 
-    vk = VKAdapter(settings, core, db, operator, knowledge_base=kb, booking=booking, intake=intake)
+    shifts = None
+    if settings.shift_bookings_enabled:
+        from urllib.parse import urlparse
+        policy = urlparse(settings.shift_privacy_policy_url)
+        if (not settings.vk_manager_user_id or not settings.booking_api_url or not settings.booking_api_secret
+                or policy.scheme != 'https' or not policy.netloc or not settings.shift_active_numbers):
+            print('      Shift applications: OFF — configure manager, booking API, HTTPS privacy policy and active shifts', flush=True)
+        else:
+            shifts_backend = booking.backend if booking is not None else AppsScriptBookingBackend(settings)
+            shifts = ShiftEngine(settings, db, backend=shifts_backend)
+            print('      Shift applications: ON — ' + ','.join(map(str,settings.shift_active_numbers)), flush=True)
+    vk = VKAdapter(settings, core, db, operator, knowledge_base=kb, booking=booking, intake=intake, shifts=shifts)
     operator.set_vk_sender(vk.send_plain_from_operator)
     operator.set_vk_marker(vk.mark_support_conversation)
     if settings.vk_manager_user_id:

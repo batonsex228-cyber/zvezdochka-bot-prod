@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 
 from .booking import BookingAPIError, BookingEngine, BookingResult, BookingUser, is_booking_request, public_rental_info
+from .shift_booking import ShiftEngine, ShiftUser, is_shift_application_request
 from .config import Settings
 from .core import SupportCore
 from .conversation import (
@@ -37,6 +38,7 @@ from .vk_keyboards import (
     main_keyboard,
     manager_ticket_keyboard,
     manager_booking_keyboard,
+    manager_shift_keyboard,
     parent_booking_confirmation_keyboard,
     parent_intake_confirmation_keyboard,
     knowledge_candidate_keyboard,
@@ -70,7 +72,7 @@ class VKAdapter:
     API_BASE = "https://api.vk.com/method/"
     TYPING_REFRESH_SECONDS = 4.0
 
-    def __init__(self, settings: Settings, core: SupportCore, db: Database, operator: OperatorBridge, *, knowledge_base=None, booking: BookingEngine | None = None, intake: SmartHandoffEngine | None = None):
+    def __init__(self, settings: Settings, core: SupportCore, db: Database, operator: OperatorBridge, *, knowledge_base=None, booking: BookingEngine | None = None, intake: SmartHandoffEngine | None = None, shifts: ShiftEngine | None = None):
         if not settings.vk_group_token or not settings.vk_group_id:
             raise RuntimeError("VKAdapter requires VK_GROUP_TOKEN and VK_GROUP_ID")
         self.settings = settings
@@ -80,6 +82,8 @@ class VKAdapter:
         self.kb = knowledge_base
         self.booking = booking
         self.intake = intake
+        self.shifts = shifts
+        self._shift_sync_task: asyncio.Task | None = None
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(40.0, connect=12.0))
         self._stopping = False
         self.group_name: str | None = None
@@ -89,9 +93,17 @@ class VKAdapter:
 
     async def close(self) -> None:
         self._stopping = True
+        if self._shift_sync_task is not None and not self._shift_sync_task.done():
+            self._shift_sync_task.cancel()
+            try:
+                await self._shift_sync_task
+            except asyncio.CancelledError:
+                pass
         await self.client.aclose()
         if self.booking is not None:
             await self.booking.close()
+        elif self.shifts is not None and self.shifts.backend is not None:
+            await self.shifts.backend.close()
 
     @staticmethod
     def _encode_param(value: Any) -> Any:
@@ -392,6 +404,30 @@ class VKAdapter:
         else:
             await self.send_message(user.peer_id, html_to_vk_text(with_greeting(customer_handoff, greeting)), keyboard=fallback_keyboard())
 
+    async def _try_shift_text(self, user: VKUser, text: str) -> bool:
+        if self.shifts is None or not self.shifts.candidate(text, user_id=user.user_id):
+            return False
+        # Switching explicitly to a different booking service releases the unfinished shift form.
+        if self.shifts.has_active(user.user_id) and is_booking_request(text) and not is_shift_application_request(text):
+            self.shifts.abandon(user.user_id)
+            return False
+        if self.intake is not None and self.intake.has_active(user.user_id):
+            self.intake.abandon_for_other_flow(user.user_id)
+        if self.booking is not None and self.booking.blocks_other_flow(user.user_id):
+            await self.booking.abandon_for_other_flow(user.user_id, reason="switched_to_shift_application")
+        result = await self.shifts.handle_text(ShiftUser(user.user_id,user.peer_id), text)
+        if not result.handled:
+            return False
+        if result.text:
+            await self.send_message(user.peer_id, result.text, keyboard=main_keyboard())
+        if result.application_id and result.manager_text:
+            try:
+                await self.send_message(int(self.settings.vk_manager_user_id), result.manager_text,
+                                        keyboard=manager_shift_keyboard(result.application_id))
+            except Exception as exc:
+                print(f"[shift] manager notification failed: {type(exc).__name__}",flush=True)
+        return True
+
     async def _send_booking_result(self, user: VKUser, result: BookingResult, *, original_question: str | None = None) -> bool:
         if not result.handled:
             return False
@@ -687,6 +723,16 @@ class VKAdapter:
             return False
         clean = text.strip()
 
+        if clean.lower() in {"#смены", "#путевки", "#путёвки"} and self.shifts is not None:
+            rows = self.shifts.pending_apps()
+            if not rows:
+                await self.send_message(user.peer_id,"🌟 Необработанных заявок на смены нет.",keyboard=admin_keyboard())
+            else:
+                for app in rows:
+                    await self.send_message(user.peer_id,self.shifts.manager_message(app),
+                                            keyboard=manager_shift_keyboard(app['application_id']))
+            return True
+
         # Explicit ticket shortcut.
         match = re.match(r"^\s*#(\d+)\s+([\s\S]+?)\s*$", clean)
         if match:
@@ -953,6 +999,8 @@ class VKAdapter:
         # Safety takes precedence over every optional feature. An urgent message must never be
         # swallowed by an unfinished booking merely because Smart Handoff is disabled.
         if not intent and is_urgent_safety(question_text):
+            if self.shifts is not None and self.shifts.has_active(user.user_id):
+                self.shifts.abandon(user.user_id)
             # An emergency also terminates any unfinished booking. Otherwise the old booking
             # state (and possibly an external hold) could wake up on the parent's next short
             # message after the urgent handoff. A booking already submitted to the manager is
@@ -986,6 +1034,10 @@ class VKAdapter:
                 "🔐 Не присылайте номер банковской карты, CVC/CVV или коды из SMS. Удалите эти данные и опишите только саму проблему с оплатой.",
                 keyboard=main_keyboard(),
             )
+            return
+
+        # Dedicated shift-application form precedes generic Smart Handoff and static FAQ.
+        if not intent and await self._try_shift_text(user, question_text):
             return
 
         # Etiquette / acknowledgement messages are complete conversations, not unanswered
@@ -1059,6 +1111,31 @@ class VKAdapter:
         user = await self._user(user_id, peer_id) if user_id and peer_id else None
         if user:
             self.db.track(user_id=user.user_id, peer_id=user.peer_id, kind="button", name=f"callback:{action}")
+
+        if action == "shift_manager" and user and self._is_manager(user.user_id) and self.shifts is not None:
+            app_id = str(payload.get('application_id') or '')
+            cmd = str(payload.get('cmd') or '')
+            if cmd not in {'approve','reject'} or not re.fullmatch(r'ZV-[A-F0-9]{12}',app_id):
+                await self._event_answer(obj,'Некорректная команда')
+                return
+            app, updated = await self.shifts.manager_decision(app_id,cmd=='approve',user.user_id)
+            if app is None:
+                await self._event_answer(obj,'Заявка не найдена')
+                return
+            if not updated:
+                await self._event_answer(obj,'Уже обработана')
+                return
+            await self._event_answer(obj,'Статус заявки обновлён')
+            msg = ('✅ Менеджер рассмотрел и подтвердил Вашу заявку на смену. '
+                   'Для завершения оформления путёвки и оплаты с Вами свяжется сотрудник лагеря.'
+                   if cmd=='approve' else
+                   'К сожалению, заявку на эту смену не удалось подтвердить. Уточнить альтернативы можно у менеджера.')
+            try:
+                await self.send_message(int(app['peer_id']),msg,keyboard=main_keyboard())
+            except Exception as exc:
+                print(f'[shift] parent status delivery failed: {type(exc).__name__}',flush=True)
+            await self.send_message(user.peer_id,f'Заявка {app_id}: {"подтверждена" if cmd=="approve" else "отменена"}.',keyboard=admin_keyboard())
+            return
 
         if action == "booking_parent" and user and self.booking is not None:
             cmd = str(payload.get("cmd") or "")
@@ -1452,6 +1529,7 @@ class VKAdapter:
 
     async def run(self) -> None:
         backoff = 2.0
+        last_shift_sync = 0.0
         while not self._stopping:
             try:
                 lp = await self.validate()
@@ -1482,6 +1560,13 @@ class VKAdapter:
                             ts = str(payload.get("ts", ts)); continue
                         break
                     ts = str(payload.get("ts", ts))
+                    if self.shifts is not None:
+                        from time import monotonic
+                        now_mono = monotonic()
+                        if now_mono - last_shift_sync >= 60:
+                            last_shift_sync = now_mono
+                            if self._shift_sync_task is None or self._shift_sync_task.done():
+                                self._shift_sync_task = asyncio.create_task(self.shifts.retry_pending(limit=3))
                     for update in payload.get("updates", []) or []:
                         if isinstance(update, dict):
                             try:

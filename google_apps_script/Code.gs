@@ -1,5 +1,5 @@
 /**
- * ZVEZDOCHKA BOOKING BRIDGE v5.9.2
+ * ZVEZDOCHKA BOOKING BRIDGE v6.0.4
  * Bound to one Google Sheet. Deploy as Web App (execute as owner).
  * The bot authenticates with API_SECRET stored in Script Properties.
  */
@@ -59,12 +59,12 @@ function setupSpreadsheet() {
     settings.getRange(2,1,3,3).setValues([
       ['timezone','Europe/Samara','Часовой пояс лагеря'],
       ['hold_minutes','15','Сколько минут держать временную бронь'],
-      ['version','5.9.2','Версия схемы'],
+      ['version','6.0.4','Версия схемы'],
     ]);
   } else {
     const settingRows = rowsFromSheet_(settings);
     const versionRow = settingRows.find(r => String(r.key || '') === 'version');
-    if (versionRow) settings.getRange(versionRow._row,2).setValue('5.9.2');
+    if (versionRow) settings.getRange(versionRow._row,2).setValue('6.0.4');
   }
   backfillOfficialRentalPricing_(services);
   services.setFrozenRows(1); blocks.setFrozenRows(1); settings.setFrozenRows(1); manager.setFrozenRows(1);
@@ -77,12 +77,13 @@ function setupSpreadsheet() {
   [7,8].forEach(col => services.getRange(2,col,Math.max(services.getMaxRows()-1,1),1).setNumberFormat('HH:mm'));
   syncManagerSheet_();
   formatManagerSheet_(manager);
+  setupShiftSheets_(ss);
   console.log('SPREADSHEET_ID=' + ss.getId());
   console.log('Готово. Теперь Deploy -> New deployment -> Web app.');
 }
 
 function doGet() {
-  return json_({ok:true, result:{service:'zvezdochka-booking', version:'5.9.2'}});
+  return json_({ok:true, result:{service:'zvezdochka-booking', version:'6.0.4'}});
 }
 
 function doPost(e) {
@@ -95,7 +96,7 @@ function doPost(e) {
     if (!payload.request_id && body.request_id) payload.request_id = String(body.request_id);
     cleanupExpiredHolds_();
     let result;
-    if (action === 'health') result = {healthy:true, version:'5.9.2'};
+    if (action === 'health') result = {healthy:true, version:'6.0.4'};
     else if (action === 'get_service') result = getService_(payload);
     else if (action === 'check_availability') result = checkAvailability_(payload);
     else if (action === 'create_hold') result = createHold_(payload);
@@ -103,6 +104,7 @@ function doPost(e) {
     else if (action === 'manager_decision') result = managerDecision_(payload);
     else if (action === 'cancel_booking') result = cancelBooking_(payload);
     else if (action === 'get_booking') result = getBooking_(payload);
+    else if (action === 'upsert_shift_application') result = upsertShiftApplication_(payload);
     else throw new Error('unknown_action');
     return json_({ok:true,result:result});
   } catch (err) {
@@ -516,4 +518,103 @@ function cleanupExpiredHolds_() {
     }
   });
   if (changed) syncManagerSheet_();
+}
+
+// ---------- v6.0.4: applications for summer shifts ----------
+// Separate from timed rentals: no reservation holds, no automatic sale of places.
+const SHIFT_HEADERS_RU = [
+  'Время заявки','Номер заявки','Смена','ФИО ребёнка','Дата рождения ребёнка',
+  'ФИО родителя','Телефон родителя','Статус','Статус оплаты','Менеджер VK ID',
+  'VK ID родителя','Обновлено'
+];
+
+function shiftSheetName_(number) {
+  const n=Number(number);
+  if (!Number.isInteger(n) || n < 1 || n > 5) throw new Error('invalid_shift_number');
+  return 'Смена ' + n;
+}
+
+function setupShiftSheets_(ss) {
+  for (let n=1;n<=5;n++) {
+    const sh=ensureSheet_(ss,shiftSheetName_(n),SHIFT_HEADERS_RU);
+    sh.setFrozenRows(1);
+    sh.getRange(1,1,1,SHIFT_HEADERS_RU.length).setFontWeight('bold');
+    sh.getRange(1,1,1,SHIFT_HEADERS_RU.length).setBackground('#214e45').setFontColor('#ffffff');
+    [1,12].forEach(c => sh.getRange(2,c,Math.max(sh.getMaxRows()-1,1),1).setNumberFormat('dd.MM.yyyy HH:mm'));
+    [2,4,5,6,7,10,11].forEach(c => sh.getRange(2,c,Math.max(sh.getMaxRows()-1,1),1).setNumberFormat('@'));
+    if (!sh.getFilter()) sh.getRange(1,1,sh.getMaxRows(),SHIFT_HEADERS_RU.length).createFilter();
+    sh.setColumnWidths(1,3,150);
+    sh.setColumnWidths(4,4,190);
+  }
+  const props=PropertiesService.getScriptProperties();
+  if (!props.getProperty('SHIFT_PII_EXPORT_ALLOWED')) props.setProperty('SHIFT_PII_EXPORT_ALLOWED','false');
+}
+
+function safeShiftCell_(value) {
+  const s=String(value == null ? '' : value);
+  // Prevent sheets formula injection from arbitrary name fields and preserve leading + in phones.
+  return /^[=+\-@\t\r]/.test(s) ? "'"+s : s;
+}
+
+function findShiftApplication_(id) {
+  for (let i=1;i<=5;i++) {
+    const sh=ss_().getSheetByName(shiftSheetName_(i));
+    if (!sh || sh.getLastRow()<2) continue;
+    const matches=sh.getRange(2,2,sh.getLastRow()-1,1).createTextFinder(id).matchEntireCell(true).findNext();
+    if (matches) return {sheet:sh,row:matches.getRow(),shift:i};
+  }
+  return null;
+}
+
+function upsertShiftApplication_(payload) {
+  const id=String(payload.application_id||'');
+  if (!/^ZV-[A-F0-9]{12}$/.test(id)) throw new Error('invalid_application_id');
+  const shift=Number(payload.shift_number);
+  const sheetName=shiftSheetName_(shift);
+  const status=String(payload.status||'');
+  if (['new','in_progress','confirmed','cancelled'].indexOf(status)<0) throw new Error('invalid_shift_status');
+  const statusRu={new:'Новая',in_progress:'В работе',confirmed:'Подтверждена',cancelled:'Отменена'};
+  const paymentRu={not_paid:'Не оплачена',part_paid:'Частично оплачена',paid:'Оплачена'};
+  const allowed=PropertiesService.getScriptProperties().getProperty('SHIFT_PII_EXPORT_ALLOWED')==='true';
+  const canExport=allowed && payload.export_pii===true;
+  const valueOf=(name)=>canExport?safeShiftCell_(String(payload[name]||'').slice(0,180)):'';
+  const created=new Date(String(payload.created_at||'').replace(' ','T')+'Z');
+  const updated=new Date(String(payload.updated_at||'').replace(' ','T')+'Z');
+  if (isNaN(created.getTime()) || isNaN(updated.getTime())) throw new Error('invalid_timestamp');
+  const values=[
+    created,id,shift,valueOf('child_name'),valueOf('child_birth_date'),
+    valueOf('parent_name'),valueOf('phone'),statusRu[status],
+    paymentRu[String(payload.payment_status||'')]||'Не оплачена',
+    safeShiftCell_(payload.manager_id||''),safeShiftCell_(payload.user_id||''),updated
+  ];
+  const lock=LockService.getScriptLock();
+  if (!lock.tryLock(8000)) throw new Error('busy_retry');
+  try {
+    const existing=findShiftApplication_(id);
+    if (existing && existing.shift!==shift) throw new Error('shift_mismatch');
+    const sh=ss_().getSheetByName(sheetName);
+    if (!sh) throw new Error('shift_sheet_missing_run_setup');
+    if (existing) {
+      const sheetStatus=String(existing.sheet.getRange(existing.row,8).getValue());
+      // Do not revert a final manager decision even if two SQLite writes have equal
+      // second-resolution timestamps or an earlier HTTP call arrives out of order.
+      if ((sheetStatus==='Подтверждена' || sheetStatus==='Отменена') &&
+          (status==='new' || status==='in_progress')) {
+        return {saved:true,already:true,application_id:id};
+      }
+      const sheetUpdated=existing.sheet.getRange(existing.row,12).getValue();
+      const stamp=new Date(sheetUpdated);
+      // Never overwrite a newer manager decision with a delayed retry from an older request.
+      if (!isNaN(stamp.getTime()) && stamp.getTime()>updated.getTime()) {
+        return {saved:true,already:true,application_id:id};
+      }
+      existing.sheet.getRange(existing.row,1,1,SHIFT_HEADERS_RU.length).setValues([values]);
+    } else {
+      sh.getRange(sh.getLastRow()+1,1,1,SHIFT_HEADERS_RU.length).setValues([values]);
+    }
+    SpreadsheetApp.flush();
+    return {saved:true,application_id:id,shift_number:shift};
+  } finally {
+    lock.releaseLock();
+  }
 }

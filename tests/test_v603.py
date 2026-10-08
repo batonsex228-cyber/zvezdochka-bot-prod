@@ -93,7 +93,7 @@ class FakeBackend:
 
 class RentalCatalogTests(unittest.TestCase):
     def test_release_version(self):
-        self.assertEqual(VERSION, "6.0.3")
+        self.assertEqual(VERSION, "6.0.4")
 
     def test_gazebo_public_price(self):
         text = public_rental_info("Добрый вечер, сколько стоит аренда беседки и что входит?")
